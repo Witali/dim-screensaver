@@ -1,7 +1,7 @@
 # Dim Screensaver
 
-Windows screen saver experiments that smoothly dim the current desktop over 10 seconds.
-Both implementations quantize opacity into 16 transparency levels.
+Windows screen saver experiments that dim the current desktop over 10 seconds.
+Both implementations update opacity at about 15 frames per second.
 
 Implementations:
 
@@ -41,3 +41,4 @@ dim-screensaver-C-sharp\publish\DimScreensaver.scr
 ```
 
 Move the mouse, click, or press any key to fade it out over 1 second and close it.
+The mouse cursor is hidden before the fade starts and restored on exit.

@@ -12,7 +12,7 @@ namespace DimScreensaver
     {
         private const int FadeDurationMs = 10000;
         private const int ExitFadeDurationMs = 1000;
-        private const int TransparencySteps = 16;
+        private const int OpacityTimerIntervalMs = 67;
         private const float FinalDarkness = 0.94f;
 
         [STAThread]
@@ -91,18 +91,21 @@ namespace DimScreensaver
         {
             private readonly List<DimForm> forms = new List<DimForm>();
             private int openForms;
+            private bool cursorHidden;
 
             public ScreensaverContext()
             {
                 Screen[] screens = Screen.AllScreens;
                 openForms = screens.Length;
 
+                HideCursor();
+
                 foreach (Screen screen in screens)
                 {
                     // Each monitor gets its own transparent black overlay window.
                     // This handles negative coordinates used by monitors positioned
                     // left/above the primary display.
-                    DimForm form = new DimForm(screen.Bounds, FadeDurationMs, ExitFadeDurationMs, TransparencySteps, FinalDarkness);
+                    DimForm form = new DimForm(screen.Bounds, FadeDurationMs, ExitFadeDurationMs, OpacityTimerIntervalMs, FinalDarkness);
                     form.FormClosed += HandleFormClosed;
                     form.ExitRequested += CloseAll;
                     forms.Add(form);
@@ -122,7 +125,31 @@ namespace DimScreensaver
                     }
                 }
 
+                ShowCursorIfHidden();
                 base.Dispose(disposing);
+            }
+
+            private void HideCursor()
+            {
+                while (ShowCursor(false) >= 0)
+                {
+                }
+
+                cursorHidden = true;
+            }
+
+            private void ShowCursorIfHidden()
+            {
+                if (!cursorHidden)
+                {
+                    return;
+                }
+
+                while (ShowCursor(true) < 0)
+                {
+                }
+
+                cursorHidden = false;
             }
 
             private void CloseAll(object sender, EventArgs e)
@@ -153,31 +180,27 @@ namespace DimScreensaver
         {
             private const int WakeMovePixels = 6;
 
-            private readonly Stopwatch stopwatch = Stopwatch.StartNew();
-            private readonly Timer timer = new Timer { Interval = 16 };
+            private readonly Stopwatch stopwatch = new Stopwatch();
+            private readonly Timer timer = new Timer();
             private readonly int fadeDurationMs;
             private readonly int exitFadeDurationMs;
-            private readonly int transparencySteps;
             private readonly float finalDarkness;
             private Point lastMousePosition;
             private bool ignoreInitialMouseMove = true;
             private bool exiting;
             private long exitStartedAtMs;
             private double exitStartOpacity;
-            private double lastAppliedOpacity = -1d;
 
             public event EventHandler ExitRequested;
 
-            public DimForm(Rectangle bounds, int fadeDurationMs, int exitFadeDurationMs, int transparencySteps, float finalDarkness)
+            public DimForm(Rectangle bounds, int fadeDurationMs, int exitFadeDurationMs, int opacityTimerIntervalMs, float finalDarkness)
             {
                 this.fadeDurationMs = fadeDurationMs;
                 this.exitFadeDurationMs = exitFadeDurationMs;
-                this.transparencySteps = transparencySteps;
                 this.finalDarkness = finalDarkness;
 
                 AutoScaleMode = AutoScaleMode.None;
                 BackColor = Color.Black;
-                Cursor.Hide();
                 DoubleBuffered = true;
                 FormBorderStyle = FormBorderStyle.None;
                 KeyPreview = true;
@@ -190,8 +213,8 @@ namespace DimScreensaver
                 TopMost = true;
                 WindowState = FormWindowState.Normal;
 
+                timer.Interval = opacityTimerIntervalMs;
                 timer.Tick += HandleTimerTick;
-                timer.Start();
             }
 
             protected override CreateParams CreateParams
@@ -212,7 +235,9 @@ namespace DimScreensaver
             {
                 base.OnShown(e);
                 lastMousePosition = Cursor.Position;
+                stopwatch.Start();
                 UpdateOpacity();
+                timer.Start();
                 Activate();
             }
 
@@ -270,7 +295,6 @@ namespace DimScreensaver
                 timer.Stop();
                 timer.Tick -= HandleTimerTick;
                 timer.Dispose();
-                Cursor.Show();
                 base.OnFormClosed(e);
             }
 
@@ -288,7 +312,7 @@ namespace DimScreensaver
                 {
                     progress = Clamp((stopwatch.ElapsedMilliseconds - exitStartedAtMs) / (float)exitFadeDurationMs, 0f, 1f);
                     eased = EaseInOutCubic(progress);
-                    ApplyOpacity(QuantizeOpacity(exitStartOpacity, 1d - eased));
+                    Opacity = Math.Max(0d, exitStartOpacity * (1d - eased));
 
                     if (progress >= 1f)
                     {
@@ -300,7 +324,7 @@ namespace DimScreensaver
 
                 progress = Clamp(stopwatch.ElapsedMilliseconds / (float)fadeDurationMs, 0f, 1f);
                 eased = EaseInOutCubic(progress);
-                ApplyOpacity(QuantizeOpacity(finalDarkness, eased));
+                Opacity = Math.Min(1d, finalDarkness * eased);
 
                 if (progress >= 1f)
                 {
@@ -315,6 +339,11 @@ namespace DimScreensaver
                     return;
                 }
 
+                if (!stopwatch.IsRunning)
+                {
+                    stopwatch.Start();
+                }
+
                 exiting = true;
                 exitStartedAtMs = stopwatch.ElapsedMilliseconds;
                 exitStartOpacity = Opacity;
@@ -325,36 +354,6 @@ namespace DimScreensaver
                 }
 
                 UpdateOpacity();
-            }
-
-            private void ApplyOpacity(double opacity)
-            {
-                if (Math.Abs(opacity - lastAppliedOpacity) < 0.0001d)
-                {
-                    return;
-                }
-
-                Opacity = opacity;
-                lastAppliedOpacity = opacity;
-            }
-
-            private double QuantizeOpacity(double maxOpacity, double fraction)
-            {
-                int intervals = Math.Max(1, transparencySteps - 1);
-                int level;
-
-                if (maxOpacity <= 0d || fraction <= 0d)
-                {
-                    return 0d;
-                }
-
-                if (fraction > 1d)
-                {
-                    fraction = 1d;
-                }
-
-                level = (int)Math.Round(fraction * intervals);
-                return maxOpacity * level / intervals;
             }
 
             private void RequestExit()
@@ -530,6 +529,9 @@ namespace DimScreensaver
 
         [DllImport("user32.dll")]
         private static extern IntPtr SetParent(IntPtr childHandle, IntPtr parentHandle);
+
+        [DllImport("user32.dll")]
+        private static extern int ShowCursor(bool show);
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool SetProcessDPIAware();

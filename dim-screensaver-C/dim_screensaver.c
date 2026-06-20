@@ -12,7 +12,8 @@
 #define FADE_DURATION_MS 10000.0
 #define EXIT_FADE_DURATION_MS 1000.0
 #define FINAL_DARKNESS 0.94
-#define TRANSPARENCY_STEPS 16
+/* 67 ms is roughly 15 FPS: smooth enough for this fade, but cheap to run. */
+#define OPACITY_TIMER_INTERVAL_MS 67
 #define WAKE_MOVE_PIXELS 6
 
 typedef enum AppMode {
@@ -38,7 +39,6 @@ typedef struct AppState {
     ULONGLONG start_tick;
     ULONGLONG dismiss_start_tick;
     BYTE dismiss_start_alpha;
-    int applied_alpha;
     POINT last_mouse;
     BOOL ignore_initial_mouse_move;
     BOOL dismissing;
@@ -60,7 +60,6 @@ static BOOL RegisterWindowClasses(HINSTANCE instance);
 static LRESULT CALLBACK SaverWindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
 static void GetVirtualDesktopBounds(AppState *state);
 static BYTE CurrentFadeAlpha(const AppState *state);
-static BYTE QuantizedAlpha(int max_alpha, double fraction);
 static double EaseInOutCubic(double value);
 static void SetSaverOpacity(AppState *state);
 static void PaintSaver(HWND hwnd, AppState *state);
@@ -190,12 +189,14 @@ static int RunSaver(HINSTANCE instance)
     ZeroMemory(&state, sizeof(state));
     state.instance = instance;
     state.mode = MODE_SAVER;
-    state.start_tick = GetTickCount64();
-    state.applied_alpha = -1;
     state.ignore_initial_mouse_move = TRUE;
     GetCursorPos(&state.last_mouse);
     GetVirtualDesktopBounds(&state);
 
+    /*
+     * The saver window is pure black and layered. Instead of repainting pixels,
+     * the timer changes the window alpha and lets DWM blend it over the desktop.
+     */
     hwnd = CreateWindowExW(
         WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
         SaverClassName,
@@ -216,8 +217,9 @@ static int RunSaver(HINSTANCE instance)
     }
 
     state.hwnd = hwnd;
-    SetSaverOpacity(&state);
     HideCursor(&state);
+    state.start_tick = GetTickCount64();
+    SetSaverOpacity(&state);
 
     ShowWindow(hwnd, SW_SHOW);
     SetForegroundWindow(hwnd);
@@ -322,11 +324,12 @@ static LRESULT CALLBACK SaverWindowProc(HWND hwnd, UINT message, WPARAM wparam, 
 
     case WM_CREATE:
         state = (AppState *)((CREATESTRUCTW *)lparam)->lpCreateParams;
-        SetTimer(hwnd, TIMER_ID, state->mode == MODE_PREVIEW ? 33 : 16, NULL);
+        SetTimer(hwnd, TIMER_ID, state->mode == MODE_PREVIEW ? 33 : OPACITY_TIMER_INTERVAL_MS, NULL);
         return 0;
 
     case WM_TIMER:
         if (state != NULL && state->mode == MODE_SAVER) {
+            /* Fade-in and fade-out both share the same 15 FPS opacity tick. */
             SetSaverOpacity(state);
         } else {
             InvalidateRect(hwnd, NULL, FALSE);
@@ -348,6 +351,10 @@ static LRESULT CALLBACK SaverWindowProc(HWND hwnd, UINT message, WPARAM wparam, 
             POINT current_mouse;
             BOOL moved_far_enough;
 
+            /*
+             * Ignore the first synthetic mouse move and require a tiny threshold,
+             * otherwise some mice wake the saver immediately due to sensor jitter.
+             */
             GetCursorPos(&current_mouse);
             moved_far_enough =
                 abs(current_mouse.x - state->last_mouse.x) > WAKE_MOVE_PIXELS ||
@@ -414,6 +421,7 @@ static BYTE CurrentFadeAlpha(const AppState *state)
     ULONGLONG elapsed;
     double progress;
     double eased;
+    int alpha;
 
     elapsed = GetTickCount64() - (state->dismissing ? state->dismiss_start_tick : state->start_tick);
     progress = (double)elapsed / (state->dismissing ? EXIT_FADE_DURATION_MS : FADE_DURATION_MS);
@@ -424,34 +432,16 @@ static BYTE CurrentFadeAlpha(const AppState *state)
     }
 
     eased = EaseInOutCubic(progress);
+    /* During dismissal, fade down from the current alpha instead of jumping. */
     if (state->dismissing) {
-        return QuantizedAlpha(state->dismiss_start_alpha, 1.0 - eased);
+        alpha = (int)(state->dismiss_start_alpha * (1.0 - eased) + 0.5);
+    } else {
+        alpha = (int)(255.0 * FINAL_DARKNESS * eased + 0.5);
     }
 
-    return QuantizedAlpha((int)(255.0 * FINAL_DARKNESS + 0.5), eased);
-}
-
-static BYTE QuantizedAlpha(int max_alpha, double fraction)
-{
-    int intervals = TRANSPARENCY_STEPS - 1;
-    int level;
-    int alpha;
-
-    if (max_alpha <= 0 || fraction <= 0.0) {
+    if (alpha < 0) {
         return 0;
     }
-
-    if (fraction > 1.0) {
-        fraction = 1.0;
-    }
-
-    if (intervals < 1) {
-        intervals = 1;
-    }
-
-    level = (int)(fraction * intervals + 0.5);
-    alpha = (max_alpha * level + intervals / 2) / intervals;
-
     if (alpha > 255) {
         return 255;
     }
@@ -472,14 +462,12 @@ static void SetSaverOpacity(AppState *state)
 {
     if (state->hwnd != NULL) {
         BYTE alpha = CurrentFadeAlpha(state);
-
-        if (state->applied_alpha != (int)alpha) {
-            SetLayeredWindowAttributes(state->hwnd, 0, alpha, LWA_ALPHA);
-            state->applied_alpha = alpha;
-        }
+        SetLayeredWindowAttributes(state->hwnd, 0, alpha, LWA_ALPHA);
 
         if (state->dismissing && alpha == 0) {
             DestroyWindow(state->hwnd);
+        } else if (!state->dismissing && GetTickCount64() - state->start_tick >= (ULONGLONG)FADE_DURATION_MS) {
+            KillTimer(state->hwnd, TIMER_ID);
         }
     }
 }
@@ -543,14 +531,20 @@ static void DismissSaver(HWND hwnd)
         return;
     }
 
+    /* Start a one-second fade-out from whatever opacity is currently visible. */
     state->dismiss_start_alpha = CurrentFadeAlpha(state);
     state->dismiss_start_tick = GetTickCount64();
     state->dismissing = TRUE;
+    SetTimer(hwnd, TIMER_ID, OPACITY_TIMER_INTERVAL_MS, NULL);
     SetSaverOpacity(state);
 }
 
 static void HideCursor(AppState *state)
 {
+    /*
+     * ShowCursor keeps an internal display counter. Drive it below zero so the
+     * cursor stays hidden until ShowCursorIfHidden restores it on exit.
+     */
     while (ShowCursor(FALSE) >= 0) {
     }
 

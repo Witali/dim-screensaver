@@ -1,7 +1,7 @@
 # Dim Screensaver
 
 Windows screen saver that opens transparent black overlay windows over all monitors, then smoothly fades them toward opacity over 10 seconds.
-Opacity is quantized into 16 transparency levels.
+Opacity is updated at about 15 frames per second.
 
 ## Build
 
@@ -28,6 +28,7 @@ Run the saver directly:
 ```
 
 Move the mouse, click, or press any key to fade it out over 1 second and close it.
+The mouse cursor is hidden before the fade starts and restored on exit.
 
 ## Install
 
