@@ -24,6 +24,7 @@ namespace DimScreensaver
         private const int UoiName = 2;
         private static string logPath;
 
+        // Entry point for .scr execution; dispatches to preview, configuration, or saver mode.
         [STAThread]
         private static void Main(string[] args)
         {
@@ -62,6 +63,7 @@ namespace DimScreensaver
             }
         }
 
+        // Starts the full-screen saver context with settings loaded from the .ini file.
         private static void RunScreensaver()
         {
             using (ScreensaverContext context = new ScreensaverContext(LoadSettings()))
@@ -70,6 +72,7 @@ namespace DimScreensaver
             }
         }
 
+        // Appends one diagnostic log line, ignoring logging failures so the saver can keep running.
         private static void Log(string format, params object[] args)
         {
             try
@@ -85,6 +88,7 @@ namespace DimScreensaver
             }
         }
 
+        // Chooses a writable diagnostic log path beside the .scr or under LocalAppData.
         private static string GetLogPath()
         {
             if (logPath != null)
@@ -113,6 +117,7 @@ namespace DimScreensaver
             return logPath;
         }
 
+        // Reads fade, lock, and background-image settings from the .ini next to the .scr.
         private static ScreensaverSettings LoadSettings()
         {
             ScreensaverSettings settings = ScreensaverSettings.CreateDefault();
@@ -204,6 +209,7 @@ namespace DimScreensaver
             return settings;
         }
 
+        // Parses and clamps a seconds value from the settings file.
         private static bool TryParseSeconds(string text, out int seconds)
         {
             if (!int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out seconds))
@@ -215,6 +221,7 @@ namespace DimScreensaver
             return true;
         }
 
+        // Parses common true/false spellings from the settings file.
         private static bool TryParseBoolean(string text, out bool value)
         {
             string normalized = text.Trim();
@@ -241,6 +248,7 @@ namespace DimScreensaver
             return false;
         }
 
+        // Removes optional single or double quotes from a configured path.
         private static string UnquotePath(string text)
         {
             string trimmed = text == null ? string.Empty : text.Trim();
@@ -254,6 +262,7 @@ namespace DimScreensaver
             return trimmed;
         }
 
+        // Records the current thread desktop name for diagnostics.
         private static void LogCurrentDesktopName()
         {
             IntPtr desktop = GetThreadDesktop(GetCurrentThreadId());
@@ -275,6 +284,7 @@ namespace DimScreensaver
             }
         }
 
+        // Enables DPI awareness so screen bounds are read in physical pixels.
         private static void EnableDpiAwareness()
         {
             try
@@ -315,6 +325,7 @@ namespace DimScreensaver
 
             public string BackgroundImagePath { get; set; }
 
+            // Creates the default settings used when the .ini file is missing or invalid.
             public static ScreensaverSettings CreateDefault()
             {
                 return new ScreensaverSettings
@@ -335,6 +346,7 @@ namespace DimScreensaver
             private bool cursorHidden;
             private bool locking;
 
+            // Creates one saver form per monitor and wires shared exit and lock events.
             public ScreensaverContext(ScreensaverSettings settings)
             {
                 this.settings = settings;
@@ -358,6 +370,7 @@ namespace DimScreensaver
                 }
             }
 
+            // Releases saver forms and restores the cursor before the application exits.
             protected override void Dispose(bool disposing)
             {
                 if (disposing)
@@ -375,6 +388,7 @@ namespace DimScreensaver
                 base.Dispose(disposing);
             }
 
+            // Hides the cursor by driving the Win32 display counter below zero.
             private void HideCursor()
             {
                 while (ShowCursor(false) >= 0)
@@ -384,6 +398,7 @@ namespace DimScreensaver
                 cursorHidden = true;
             }
 
+            // Restores the Win32 cursor display counter if this context hid it.
             private void ShowCursorIfHidden()
             {
                 if (!cursorHidden)
@@ -398,6 +413,7 @@ namespace DimScreensaver
                 cursorHidden = false;
             }
 
+            // Builds one frozen background bitmap for each screen.
             private static List<ScreenCapture> CaptureScreens(string configuredBackgroundImagePath)
             {
                 List<ScreenCapture> captures = new List<ScreenCapture>();
@@ -457,6 +473,7 @@ namespace DimScreensaver
                 return captures;
             }
 
+            // Loads the configured image or wallpaper and crops it to one monitor's bounds.
             private static Bitmap CreateWallpaperBackground(Rectangle bounds, string configuredBackgroundImagePath)
             {
                 string backgroundPath = GetBackgroundImagePath(configuredBackgroundImagePath);
@@ -500,6 +517,7 @@ namespace DimScreensaver
                 }
             }
 
+            // Chooses the configured image path, falling back to the current wallpaper.
             private static string GetBackgroundImagePath(string configuredBackgroundImagePath)
             {
                 if (!string.IsNullOrWhiteSpace(configuredBackgroundImagePath))
@@ -517,6 +535,7 @@ namespace DimScreensaver
                 return GetCurrentWallpaperPath();
             }
 
+            // Expands environment variables and resolves relative image paths beside the .scr.
             private static string ResolveConfiguredImagePath(string configuredBackgroundImagePath)
             {
                 string expandedPath = Environment.ExpandEnvironmentVariables(configuredBackgroundImagePath);
@@ -525,6 +544,7 @@ namespace DimScreensaver
                     : Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), expandedPath);
             }
 
+            // Computes the cover-scaled destination rectangle for drawing an image.
             private static Rectangle GetCoverDestination(Size destinationSize, Size sourceSize)
             {
                 double scaleX = destinationSize.Width / (double)sourceSize.Width;
@@ -539,6 +559,7 @@ namespace DimScreensaver
                     height);
             }
 
+            // Finds the current Windows wallpaper file, with a TranscodedWallpaper fallback.
             private static string GetCurrentWallpaperPath()
             {
                 StringBuilder path = new StringBuilder(260);
@@ -574,6 +595,7 @@ namespace DimScreensaver
                 return null;
             }
 
+            // Samples a few bitmap pixels for diagnostics without logging the whole image.
             private static void LogBitmapPixels(Bitmap bitmap)
             {
                 Color topLeft = bitmap.GetPixel(0, 0);
@@ -593,6 +615,7 @@ namespace DimScreensaver
                     bottomRight.B);
             }
 
+            // Starts fade-out on every open saver form after user input.
             private void CloseAll(object sender, EventArgs e)
             {
                 // Any input on any monitor should dismiss the entire screensaver,
@@ -607,6 +630,7 @@ namespace DimScreensaver
                 }
             }
 
+            // Counts closed saver forms and exits the application when the last one closes.
             private void HandleFormClosed(object sender, FormClosedEventArgs e)
             {
                 openForms--;
@@ -616,6 +640,7 @@ namespace DimScreensaver
                 }
             }
 
+            // Locks Windows once the fade-in timer completes, then closes all saver windows.
             private void LockWorkstationAndClose(object sender, EventArgs e)
             {
                 if (!settings.LockWorkstation)
@@ -643,6 +668,7 @@ namespace DimScreensaver
 
         private sealed class ScreenCapture
         {
+            // Stores a prepared bitmap with the screen bounds it belongs to.
             public ScreenCapture(Bitmap bitmap, Rectangle bounds)
             {
                 Bitmap = bitmap;
@@ -676,6 +702,7 @@ namespace DimScreensaver
             public event EventHandler ExitRequested;
             public event EventHandler LockRequested;
 
+            // Initializes a borderless topmost form that displays and dims one monitor bitmap.
             public DimForm(Bitmap screenCapture, Rectangle bounds, int fadeDurationMs, int exitFadeDurationMs, int frameTimerIntervalMs, float finalDarkness, bool showLockCountdown)
             {
                 this.screenCapture = screenCapture;
@@ -701,6 +728,7 @@ namespace DimScreensaver
                 timer.Tick += HandleTimerTick;
             }
 
+            // Adds tool-window style flags so the saver surface stays out of Alt-Tab.
             protected override CreateParams CreateParams
             {
                 get
@@ -715,6 +743,7 @@ namespace DimScreensaver
                 }
             }
 
+            // Starts animation timing once the form is visible.
             protected override void OnShown(EventArgs e)
             {
                 base.OnShown(e);
@@ -725,6 +754,7 @@ namespace DimScreensaver
                 Activate();
             }
 
+            // Paints the frozen background, the dim overlay, and the lock countdown.
             protected override void OnPaint(PaintEventArgs e)
             {
                 base.OnPaint(e);
@@ -745,6 +775,7 @@ namespace DimScreensaver
                 PaintLockCountdown(e.Graphics);
             }
 
+            // Dismisses the saver after meaningful mouse movement.
             protected override void OnMouseMove(MouseEventArgs e)
             {
                 base.OnMouseMove(e);
@@ -770,18 +801,21 @@ namespace DimScreensaver
                 }
             }
 
+            // Dismisses the saver on mouse button input.
             protected override void OnMouseDown(MouseEventArgs e)
             {
                 base.OnMouseDown(e);
                 RequestExit();
             }
 
+            // Dismisses the saver on keyboard input.
             protected override void OnKeyDown(KeyEventArgs e)
             {
                 base.OnKeyDown(e);
                 RequestExit();
             }
 
+            // Stops animation resources and disposes the screen bitmap when the form closes.
             protected override void OnFormClosed(FormClosedEventArgs e)
             {
                 timer.Stop();
@@ -791,6 +825,7 @@ namespace DimScreensaver
                 base.OnFormClosed(e);
             }
 
+            // Draws the remaining seconds before lock in the lower-right corner.
             private void PaintLockCountdown(Graphics graphics)
             {
                 if (!showLockCountdown || exiting || lockRequested)
@@ -827,11 +862,13 @@ namespace DimScreensaver
                 }
             }
 
+            // Advances the fade animation on each timer tick.
             private void HandleTimerTick(object sender, EventArgs e)
             {
                 UpdateFrame();
             }
 
+            // Computes the current dim level and requests lock or close when a fade completes.
             private void UpdateFrame()
             {
                 float progress;
@@ -864,6 +901,7 @@ namespace DimScreensaver
                 }
             }
 
+            // Begins the one-second fade-out from the current darkness.
             public void StartExitFade()
             {
                 if (exiting)
@@ -888,6 +926,7 @@ namespace DimScreensaver
                 UpdateFrame();
             }
 
+            // Raises the shared exit request or starts local fade-out if no handler is attached.
             private void RequestExit()
             {
                 if (exiting)
@@ -906,6 +945,7 @@ namespace DimScreensaver
                 }
             }
 
+            // Raises the shared lock request once the fade-in delay has elapsed.
             private void RequestLock()
             {
                 if (exiting || lockRequested)
@@ -925,6 +965,7 @@ namespace DimScreensaver
                 }
             }
 
+            // Constrains a floating-point value to an inclusive range.
             private static float Clamp(float value, float min, float max)
             {
                 if (value < min)
@@ -940,6 +981,7 @@ namespace DimScreensaver
                 return value;
             }
 
+            // Smooths a 0..1 fade progress value with cubic easing.
             private static float EaseInOutCubic(float value)
             {
                 // Starts and ends gently, so the screen does not abruptly jump
@@ -956,6 +998,7 @@ namespace DimScreensaver
             private readonly Timer timer = new Timer { Interval = 33 };
             private float phase;
 
+            // Initializes the lightweight preview surface hosted by Screen Saver Settings.
             public PreviewForm(IntPtr parentHandle)
             {
                 this.parentHandle = parentHandle;
@@ -970,6 +1013,7 @@ namespace DimScreensaver
                 timer.Tick += HandleTimerTick;
             }
 
+            // Reparents the preview form into the Windows preview host and starts animation.
             protected override void OnLoad(EventArgs e)
             {
                 base.OnLoad(e);
@@ -986,6 +1030,7 @@ namespace DimScreensaver
                 timer.Start();
             }
 
+            // Paints the animated preview gradient and dim overlay.
             protected override void OnPaint(PaintEventArgs e)
             {
                 base.OnPaint(e);
@@ -1008,6 +1053,7 @@ namespace DimScreensaver
                 }
             }
 
+            // Stops and disposes preview animation resources.
             protected override void OnFormClosed(FormClosedEventArgs e)
             {
                 timer.Stop();
@@ -1016,6 +1062,7 @@ namespace DimScreensaver
                 base.OnFormClosed(e);
             }
 
+            // Advances the preview animation phase on each timer tick.
             private void HandleTimerTick(object sender, EventArgs e)
             {
                 phase = (phase + 0.012f) % 1f;
@@ -1032,6 +1079,7 @@ namespace DimScreensaver
 
         private sealed class ScreenSaverCommand
         {
+            // Stores the parsed screen saver command and optional preview parent handle.
             public ScreenSaverCommand(ScreenSaverCommandKind kind, IntPtr previewParentHandle)
             {
                 Kind = kind;
@@ -1041,6 +1089,7 @@ namespace DimScreensaver
             public ScreenSaverCommandKind Kind { get; private set; }
             public IntPtr PreviewParentHandle { get; private set; }
 
+            // Parses Windows screen saver switches such as /s, /p, and /c.
             public static ScreenSaverCommand Parse(string[] args)
             {
                 if (args.Length == 0)
@@ -1065,6 +1114,7 @@ namespace DimScreensaver
                 return new ScreenSaverCommand(ScreenSaverCommandKind.Run, IntPtr.Zero);
             }
 
+            // Converts preview parent handle text to an IntPtr.
             private static IntPtr ParseHandle(string text)
             {
                 long handle;
@@ -1078,39 +1128,51 @@ namespace DimScreensaver
         private const int WsChild = 0x40000000;
         private const int WsVisible = 0x10000000;
 
+        // Reparents the preview form into the host window supplied by Screen Saver Settings.
         [DllImport("user32.dll")]
         private static extern IntPtr SetParent(IntPtr childHandle, IntPtr parentHandle);
 
+        // Adjusts the Win32 cursor display counter.
         [DllImport("user32.dll")]
         private static extern int ShowCursor(bool show);
 
+        // Locks the current Windows workstation.
         [DllImport("user32.dll")]
         private static extern bool LockWorkStation();
 
+        // Returns the id of the thread running the saver.
         [DllImport("kernel32.dll")]
         private static extern int GetCurrentThreadId();
 
+        // Returns the desktop object associated with a thread.
         [DllImport("user32.dll", SetLastError = true)]
         private static extern IntPtr GetThreadDesktop(int threadId);
 
+        // Reads metadata such as the desktop name from a Win32 user object.
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern bool GetUserObjectInformation(IntPtr objectHandle, int index, StringBuilder information, int length, out int needed);
 
+        // Reads system parameters, including the configured desktop wallpaper path.
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern bool SystemParametersInfo(int action, int parameter, StringBuilder value, int winIni);
 
+        // Enables legacy process-wide DPI awareness on older Windows versions.
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool SetProcessDPIAware();
 
+        // Enables modern DPI awareness when the Windows build supports it.
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool SetProcessDpiAwarenessContext(IntPtr dpiContext);
 
+        // Updates preview-window style flags after reparenting.
         [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
         private static extern IntPtr SetWindowLongPtr(IntPtr windowHandle, int index, IntPtr newLong);
 
+        // Reads the client rectangle of the preview host window.
         [DllImport("user32.dll")]
         private static extern bool GetClientRect(IntPtr windowHandle, out NativeRect rect);
 
+        // Reads the preview host client rectangle, falling back to a small default size.
         private static Rectangle GetParentClientRectangle(IntPtr parentHandle)
         {
             NativeRect rect;

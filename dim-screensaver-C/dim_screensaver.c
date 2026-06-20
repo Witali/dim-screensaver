@@ -141,6 +141,7 @@ static void HideCursor(AppState *state);
 static void ShowCursorIfHidden(AppState *state);
 static void ShowConfigurationDialog(HWND owner);
 
+/* Entry point for .scr execution; dispatches to preview, configuration, or saver mode. */
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous_instance, PWSTR command_line, int show_command)
 {
     Command command;
@@ -176,6 +177,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous_instance, PWSTR comma
     return RunSaver(instance);
 }
 
+/* Enable DPI awareness so monitor coordinates match physical screen pixels. */
 static void EnableDpiAwareness(void)
 {
     HMODULE user32;
@@ -201,6 +203,7 @@ static void EnableDpiAwareness(void)
     FreeLibrary(user32);
 }
 
+/* Parse Windows screen saver switches such as /s, /p, and /c. */
 static Command ParseCommandLine(void)
 {
     Command command;
@@ -242,6 +245,7 @@ static Command ParseCommandLine(void)
     return command;
 }
 
+/* Convert the preview parent window handle from command-line text. */
 static HWND ParseWindowHandle(const wchar_t *text)
 {
     wchar_t *end = NULL;
@@ -259,6 +263,7 @@ static HWND ParseWindowHandle(const wchar_t *text)
     return (HWND)(ULONG_PTR)value;
 }
 
+/* Run the full-screen saver, including background loading, fade timing, and input handling. */
 static int RunSaver(HINSTANCE instance)
 {
     AppState state;
@@ -357,6 +362,7 @@ static int RunSaver(HINSTANCE instance)
     return (int)message.wParam;
 }
 
+/* Run the small preview hosted by the Windows Screen Saver Settings dialog. */
 static int RunPreview(HINSTANCE instance, HWND parent)
 {
     AppState state;
@@ -406,6 +412,7 @@ static int RunPreview(HINSTANCE instance, HWND parent)
     return (int)message.wParam;
 }
 
+/* Register the window classes used by the full saver and preview windows. */
 static BOOL RegisterWindowClasses(HINSTANCE instance)
 {
     WNDCLASSW window_class;
@@ -431,6 +438,7 @@ static BOOL RegisterWindowClasses(HINSTANCE instance)
     return RegisterClassW(&window_class) != 0;
 }
 
+/* Write a diagnostic log line when logging is compiled in; otherwise do nothing. */
 static void LogMessage(const wchar_t *format, ...)
 {
 #if ENABLE_DIAGNOSTIC_LOGGING
@@ -490,6 +498,7 @@ static void LogMessage(const wchar_t *format, ...)
 }
 
 #if ENABLE_DIAGNOSTIC_LOGGING
+/* Open the diagnostic log beside the .scr, falling back to LocalAppData. */
 static HANDLE OpenLogFile(void)
 {
     HANDLE file;
@@ -529,6 +538,7 @@ static HANDLE OpenLogFile(void)
 }
 #endif
 
+/* Build a path beside the running module by replacing its file extension. */
 static BOOL GetModuleSiblingPath(const wchar_t *extension, wchar_t *path, DWORD path_count)
 {
     DWORD length;
@@ -559,6 +569,7 @@ static BOOL GetModuleSiblingPath(const wchar_t *extension, wchar_t *path, DWORD 
 }
 
 #if ENABLE_DIAGNOSTIC_LOGGING
+/* Build the LocalAppData fallback log path and ensure its directory exists. */
 static BOOL GetLocalAppDataLogPath(wchar_t *path, DWORD path_count)
 {
     wchar_t directory[MAX_PATH];
@@ -583,6 +594,7 @@ static BOOL GetLocalAppDataLogPath(wchar_t *path, DWORD path_count)
 }
 #endif
 
+/* Read fade, lock, and background-image settings from the .ini next to the .scr. */
 static Settings LoadSettings(void)
 {
     Settings settings;
@@ -708,11 +720,13 @@ static Settings LoadSettings(void)
     return settings;
 }
 
+/* Resolve the settings .ini path next to the running screen saver module. */
 static BOOL GetSettingsPath(wchar_t *path, DWORD path_count)
 {
     return GetModuleSiblingPath(L".ini", path, path_count);
 }
 
+/* Trim ASCII whitespace from a mutable settings line fragment. */
 static char *TrimAscii(char *text)
 {
     char *end;
@@ -731,6 +745,7 @@ static char *TrimAscii(char *text)
     return text;
 }
 
+/* Compare two ASCII strings without case sensitivity. */
 static BOOL EqualsIgnoreCaseAscii(const char *left, const char *right)
 {
     while (*left != '\0' && *right != '\0') {
@@ -756,6 +771,7 @@ static BOOL EqualsIgnoreCaseAscii(const char *left, const char *right)
     return *left == '\0' && *right == '\0';
 }
 
+/* Parse and clamp a seconds value from the settings file. */
 static BOOL ParseSecondsAscii(char *text, long *seconds)
 {
     char *parsed_end;
@@ -781,6 +797,7 @@ static BOOL ParseSecondsAscii(char *text, long *seconds)
     return TRUE;
 }
 
+/* Parse common true/false spellings from the settings file. */
 static BOOL ParseBoolAscii(const char *text, BOOL *value)
 {
     if (EqualsIgnoreCaseAscii(text, "true") ||
@@ -802,6 +819,7 @@ static BOOL ParseBoolAscii(const char *text, BOOL *value)
     return FALSE;
 }
 
+/* Decode a possibly quoted UTF-8 or ANSI image path from the settings file. */
 static BOOL ParsePathAscii(const char *text, wchar_t *path, DWORD path_count)
 {
     const char *start;
@@ -860,6 +878,7 @@ static BOOL ParsePathAscii(const char *text, wchar_t *path, DWORD path_count)
     return TRUE;
 }
 
+/* Query the name of the desktop attached to the current thread. */
 static BOOL GetCurrentDesktopName(wchar_t *name, DWORD name_count)
 {
     HDESK desktop;
@@ -873,6 +892,7 @@ static BOOL GetCurrentDesktopName(wchar_t *name, DWORD name_count)
     return GetUserObjectInformationW(desktop, UOI_NAME, name, name_count * sizeof(wchar_t), &needed);
 }
 
+/* Record the current desktop name when diagnostic logging is enabled. */
 static void LogCurrentDesktopName(void)
 {
     wchar_t name[256];
@@ -891,6 +911,7 @@ static void LogCurrentDesktopName(void)
     }
 }
 
+/* Record a few sampled pixels from a captured bitmap for diagnostics. */
 static void LogCapturedPixels(HDC capture_dc, int width, int height)
 {
     COLORREF top_left;
@@ -908,6 +929,7 @@ static void LogCapturedPixels(HDC capture_dc, int width, int height)
         (unsigned long)bottom_right);
 }
 
+/* Detect a flat dark Screen-saver desktop capture that cannot be used as a real background. */
 static BOOL CapturedImageLooksLikeBlankSaverDesktop(HDC capture_dc, int width, int height)
 {
     POINT points[5];
@@ -966,6 +988,7 @@ static BOOL CapturedImageLooksLikeBlankSaverDesktop(HDC capture_dc, int width, i
     return TRUE;
 }
 
+/* Handle saver and preview window messages, including timer ticks and wake input. */
 static LRESULT CALLBACK SaverWindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 {
     AppState *state;
@@ -1059,6 +1082,7 @@ static LRESULT CALLBACK SaverWindowProc(HWND hwnd, UINT message, WPARAM wparam, 
     return DefWindowProcW(hwnd, message, wparam, lparam);
 }
 
+/* Read the virtual desktop rectangle that covers all connected monitors. */
 static void GetVirtualDesktopBounds(AppState *state)
 {
     state->virtual_x = GetSystemMetrics(SM_XVIRTUALSCREEN);
@@ -1074,6 +1098,7 @@ static void GetVirtualDesktopBounds(AppState *state)
     }
 }
 
+/* Capture the currently visible desktop into a 32-bit DIB fallback background. */
 static BOOL CaptureDesktop(AppState *state)
 {
     HDC screen_dc;
@@ -1151,6 +1176,7 @@ static BOOL CaptureDesktop(AppState *state)
     return TRUE;
 }
 
+/* Try to capture the user's Default desktop from a worker thread. */
 static BOOL CaptureDefaultDesktop(AppState *state)
 {
     CaptureThreadContext context;
@@ -1172,6 +1198,7 @@ static BOOL CaptureDefaultDesktop(AppState *state)
     return context.success;
 }
 
+/* Worker thread body that switches to WinSta0\Default before capturing. */
 static DWORD WINAPI CaptureDefaultDesktopThreadProc(void *parameter)
 {
     CaptureThreadContext *context = (CaptureThreadContext *)parameter;
@@ -1204,6 +1231,7 @@ static DWORD WINAPI CaptureDefaultDesktopThreadProc(void *parameter)
     return 0;
 }
 
+/* Load the configured image or current wallpaper and prepare it for the saver. */
 static BOOL LoadBackgroundImage(AppState *state, const Settings *settings)
 {
     wchar_t image_path[MAX_PATH];
@@ -1227,6 +1255,7 @@ static BOOL LoadBackgroundImage(AppState *state, const Settings *settings)
     return loaded;
 }
 
+/* Choose the configured background image path, falling back to the current wallpaper. */
 static BOOL GetBackgroundImagePath(const Settings *settings, wchar_t *path, DWORD path_count)
 {
     if (settings != NULL && settings->background_image_path[0] != L'\0') {
@@ -1241,6 +1270,7 @@ static BOOL GetBackgroundImagePath(const Settings *settings, wchar_t *path, DWOR
     return GetCurrentWallpaperPath(path, path_count);
 }
 
+/* Expand environment variables and resolve relative image paths beside the .scr. */
 static BOOL ResolveConfiguredImagePath(const wchar_t *configured_path, wchar_t *path, DWORD path_count)
 {
     DWORD attributes;
@@ -1290,6 +1320,7 @@ static BOOL ResolveConfiguredImagePath(const wchar_t *configured_path, wchar_t *
     return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
 }
 
+/* Return the directory containing the running module. */
 static BOOL GetModuleDirectoryPath(wchar_t *path, DWORD path_count)
 {
     DWORD length;
@@ -1313,6 +1344,7 @@ static BOOL GetModuleDirectoryPath(wchar_t *path, DWORD path_count)
     return TRUE;
 }
 
+/* Find the current Windows wallpaper file, with a TranscodedWallpaper fallback. */
 static BOOL GetCurrentWallpaperPath(wchar_t *path, DWORD path_count)
 {
     DWORD attributes;
@@ -1348,6 +1380,7 @@ static BOOL GetCurrentWallpaperPath(wchar_t *path, DWORD path_count)
     return TRUE;
 }
 
+/* Build the standard Windows TranscodedWallpaper path under AppData. */
 static BOOL GetTranscodedWallpaperPath(wchar_t *path, DWORD path_count)
 {
     wchar_t app_data[MAX_PATH];
@@ -1369,6 +1402,7 @@ static BOOL GetTranscodedWallpaperPath(wchar_t *path, DWORD path_count)
     return written > 0 && (DWORD)written < path_count;
 }
 
+/* Decode an image file through WIC into a top-down 32-bit bitmap. */
 static BOOL LoadImageFileAsBitmap(const wchar_t *path, HBITMAP *bitmap, int *width, int *height)
 {
     HRESULT hr;
@@ -1509,6 +1543,7 @@ cleanup:
     return *bitmap != NULL;
 }
 
+/* Scale and crop the source image into a virtual-desktop-sized background DIB. */
 static BOOL CreateWallpaperCanvas(AppState *state, HBITMAP source_bitmap, int source_width, int source_height)
 {
     HDC screen_dc;
@@ -1617,6 +1652,7 @@ static BOOL CreateWallpaperCanvas(AppState *state, HBITMAP source_bitmap, int so
     return TRUE;
 }
 
+/* Allocate a top-down 32-bit DIB section and return its pixel buffer. */
 static HBITMAP CreateTopDownDib(int width, int height, void **bits)
 {
     BITMAPINFO bitmap_info;
@@ -1637,6 +1673,7 @@ static HBITMAP CreateTopDownDib(int width, int height, void **bits)
     return CreateDIBSection(NULL, &bitmap_info, DIB_RGB_COLORS, bits, NULL, 0);
 }
 
+/* Replace the current background bitmap and reset cached dimmed frames. */
 static void StoreBackgroundBitmap(AppState *state, HBITMAP bitmap, void *bits, int width, int height)
 {
     ReleaseCapturedDesktop(state);
@@ -1648,6 +1685,7 @@ static void StoreBackgroundBitmap(AppState *state, HBITMAP bitmap, void *bits, i
     state->dimmed_bitmap_valid = FALSE;
 }
 
+/* Darken the background pixels in CPU memory for the requested alpha. */
 static BOOL RenderDimmedFrame(AppState *state, BYTE alpha)
 {
     const DWORD *source;
@@ -1690,6 +1728,7 @@ static BOOL RenderDimmedFrame(AppState *state, BYTE alpha)
     return TRUE;
 }
 
+/* Allocate the reusable dimmed-frame DIB if it does not already exist. */
 static BOOL EnsureDimmedBitmap(AppState *state)
 {
     if (state->dimmed_bitmap != NULL &&
@@ -1719,6 +1758,7 @@ static BOOL EnsureDimmedBitmap(AppState *state)
     return TRUE;
 }
 
+/* Compute the current black-overlay alpha for fade-in or fade-out. */
 static BYTE CurrentFadeAlpha(const AppState *state)
 {
     ULONGLONG elapsed;
@@ -1752,6 +1792,7 @@ static BYTE CurrentFadeAlpha(const AppState *state)
     return (BYTE)alpha;
 }
 
+/* Smooth a 0..1 fade progress value with cubic easing. */
 static double EaseInOutCubic(double value)
 {
     if (value < 0.5) {
@@ -1761,6 +1802,7 @@ static double EaseInOutCubic(double value)
     return 1.0 - pow(-2.0 * value + 2.0, 3.0) / 2.0;
 }
 
+/* Advance the fade animation, repaint, and lock Windows when the timer completes. */
 static void UpdateSaverFrame(AppState *state)
 {
     if (state->hwnd != NULL) {
@@ -1780,6 +1822,7 @@ static void UpdateSaverFrame(AppState *state)
     }
 }
 
+/* Paint the current dimmed frame and lock countdown. */
 static void PaintSaver(HWND hwnd, AppState *state)
 {
     PAINTSTRUCT paint;
@@ -1823,6 +1866,7 @@ static void PaintSaver(HWND hwnd, AppState *state)
     EndPaint(hwnd, &paint);
 }
 
+/* Draw the remaining seconds before lock in the lower-right corner. */
 static void PaintLockCountdown(HDC hdc, const RECT *client, const AppState *state)
 {
     ULONGLONG elapsed;
@@ -1915,6 +1959,7 @@ static void PaintLockCountdown(HDC hdc, const RECT *client, const AppState *stat
     DeleteObject(font);
 }
 
+/* Paint the lightweight animated preview in Screen Saver Settings. */
 static void PaintPreview(HWND hwnd, AppState *state)
 {
     PAINTSTRUCT paint;
@@ -1944,6 +1989,7 @@ static void PaintPreview(HWND hwnd, AppState *state)
     EndPaint(hwnd, &paint);
 }
 
+/* Start the fade-out sequence in response to user input. */
 static void DismissSaver(HWND hwnd)
 {
     AppState *state = (AppState *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
@@ -1965,6 +2011,7 @@ static void DismissSaver(HWND hwnd)
     UpdateSaverFrame(state);
 }
 
+/* Free background and dimmed-frame bitmaps owned by the saver state. */
 static void ReleaseCapturedDesktop(AppState *state)
 {
     if (state->dimmed_bitmap != NULL) {
@@ -1986,6 +2033,7 @@ static void ReleaseCapturedDesktop(AppState *state)
     state->dimmed_bitmap_valid = FALSE;
 }
 
+/* Hide the cursor for the lifetime of the full-screen saver. */
 static void HideCursor(AppState *state)
 {
     /*
@@ -1998,6 +2046,7 @@ static void HideCursor(AppState *state)
     state->cursor_hidden = TRUE;
 }
 
+/* Restore the cursor display counter when the saver exits. */
 static void ShowCursorIfHidden(AppState *state)
 {
     if (!state->cursor_hidden) {
@@ -2010,6 +2059,7 @@ static void ShowCursorIfHidden(AppState *state)
     state->cursor_hidden = FALSE;
 }
 
+/* Show the simple configuration/help dialog for /c mode. */
 static void ShowConfigurationDialog(HWND owner)
 {
     MessageBoxW(
