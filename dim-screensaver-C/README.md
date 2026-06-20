@@ -2,8 +2,8 @@
 
 Native Win32 implementation of Dim Screensaver.
 
-It opens a borderless topmost black window over all monitors. The window starts fully transparent, then fades toward opacity over a configurable delay.
-Opacity is updated at about 15 frames per second.
+It captures the current desktop, opens a borderless topmost window over all monitors, then draws the captured image with an increasingly dark black layer.
+The dimmed frame is redrawn at about 15 frames per second.
 
 ## Build
 
@@ -43,3 +43,5 @@ The older `LockDelaySeconds` key is still accepted as an alias for `FadeInSecond
 Move the mouse, click, or press any key to fade it out over 1 second and close it.
 The mouse cursor is hidden before the fade starts and restored on exit.
 If there is no input during the configured dimming period, the saver calls Windows Lock Workstation after the fade completes.
+
+When installing it in Windows Screen Saver Settings, leave the Windows **On resume, display logon screen** checkbox turned off. This saver performs its own delayed lock with `LockWorkstation=true`; the Windows checkbox can make Windows switch away from the visible desktop before the saver captures it.

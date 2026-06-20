@@ -43,6 +43,7 @@ typedef struct AppState {
     AppMode mode;
     HWND hwnd;
     HWND preview_parent;
+    HBITMAP desktop_bitmap;
     int virtual_x;
     int virtual_y;
     int virtual_width;
@@ -80,12 +81,15 @@ static BOOL EqualsIgnoreCaseAscii(const char *left, const char *right);
 static BOOL ParseSecondsAscii(char *text, long *seconds);
 static BOOL ParseBoolAscii(const char *text, BOOL *value);
 static void GetVirtualDesktopBounds(AppState *state);
+static BOOL CaptureDesktop(AppState *state);
 static BYTE CurrentFadeAlpha(const AppState *state);
 static double EaseInOutCubic(double value);
-static void SetSaverOpacity(AppState *state);
+static void UpdateSaverFrame(AppState *state);
 static void PaintSaver(HWND hwnd, AppState *state);
+static void PaintBlackOverlay(HDC hdc, const RECT *client, BYTE alpha);
 static void PaintPreview(HWND hwnd, AppState *state);
 static void DismissSaver(HWND hwnd);
+static void ReleaseCapturedDesktop(AppState *state);
 static void HideCursor(AppState *state);
 static void ShowCursorIfHidden(AppState *state);
 static void ShowConfigurationDialog(HWND owner);
@@ -219,13 +223,15 @@ static int RunSaver(HINSTANCE instance)
     state.ignore_initial_mouse_move = TRUE;
     GetCursorPos(&state.last_mouse);
     GetVirtualDesktopBounds(&state);
+    HideCursor(&state);
+    CaptureDesktop(&state);
 
     /*
-     * The saver window is pure black and layered. Instead of repainting pixels,
-     * the timer changes the window alpha and lets DWM blend it over the desktop.
+     * Capture the desktop before showing the saver window. The window itself is
+     * fully opaque; each frame redraws the captured desktop and a black overlay.
      */
     hwnd = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
         SaverClassName,
         L"Dim Screensaver C",
         WS_POPUP,
@@ -239,16 +245,17 @@ static int RunSaver(HINSTANCE instance)
         &state);
 
     if (hwnd == NULL) {
+        ReleaseCapturedDesktop(&state);
+        ShowCursorIfHidden(&state);
         MessageBoxW(NULL, L"Could not create the screensaver window.", L"Dim Screensaver C", MB_OK | MB_ICONERROR);
         return 1;
     }
 
     state.hwnd = hwnd;
-    HideCursor(&state);
     state.start_tick = GetTickCount64();
-    SetSaverOpacity(&state);
 
     ShowWindow(hwnd, SW_SHOW);
+    UpdateWindow(hwnd);
     SetForegroundWindow(hwnd);
     SetFocus(hwnd);
 
@@ -258,6 +265,7 @@ static int RunSaver(HINSTANCE instance)
     }
 
     ShowCursorIfHidden(&state);
+    ReleaseCapturedDesktop(&state);
     return (int)message.wParam;
 }
 
@@ -319,7 +327,7 @@ static BOOL RegisterWindowClasses(HINSTANCE instance)
     window_class.hInstance = instance;
     window_class.lpszClassName = SaverClassName;
     window_class.hCursor = NULL;
-    window_class.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    window_class.hbrBackground = NULL;
 
     if (!RegisterClassW(&window_class)) {
         return FALSE;
@@ -579,8 +587,8 @@ static LRESULT CALLBACK SaverWindowProc(HWND hwnd, UINT message, WPARAM wparam, 
 
     case WM_TIMER:
         if (state != NULL && state->mode == MODE_SAVER) {
-            /* Fade-in and fade-out both share the same 15 FPS opacity tick. */
-            SetSaverOpacity(state);
+            /* Fade-in and fade-out both share the same 15 FPS redraw tick. */
+            UpdateSaverFrame(state);
         } else {
             InvalidateRect(hwnd, NULL, FALSE);
         }
@@ -666,6 +674,57 @@ static void GetVirtualDesktopBounds(AppState *state)
     }
 }
 
+static BOOL CaptureDesktop(AppState *state)
+{
+    HDC screen_dc;
+    HDC capture_dc;
+    HBITMAP bitmap;
+    HGDIOBJ old_bitmap;
+    BOOL copied;
+
+    screen_dc = GetDC(NULL);
+    if (screen_dc == NULL) {
+        return FALSE;
+    }
+
+    capture_dc = CreateCompatibleDC(screen_dc);
+    if (capture_dc == NULL) {
+        ReleaseDC(NULL, screen_dc);
+        return FALSE;
+    }
+
+    bitmap = CreateCompatibleBitmap(screen_dc, state->virtual_width, state->virtual_height);
+    if (bitmap == NULL) {
+        DeleteDC(capture_dc);
+        ReleaseDC(NULL, screen_dc);
+        return FALSE;
+    }
+
+    old_bitmap = SelectObject(capture_dc, bitmap);
+    copied = BitBlt(
+        capture_dc,
+        0,
+        0,
+        state->virtual_width,
+        state->virtual_height,
+        screen_dc,
+        state->virtual_x,
+        state->virtual_y,
+        SRCCOPY | CAPTUREBLT);
+
+    SelectObject(capture_dc, old_bitmap);
+    DeleteDC(capture_dc);
+    ReleaseDC(NULL, screen_dc);
+
+    if (!copied) {
+        DeleteObject(bitmap);
+        return FALSE;
+    }
+
+    state->desktop_bitmap = bitmap;
+    return TRUE;
+}
+
 static BYTE CurrentFadeAlpha(const AppState *state)
 {
     ULONGLONG elapsed;
@@ -708,11 +767,11 @@ static double EaseInOutCubic(double value)
     return 1.0 - pow(-2.0 * value + 2.0, 3.0) / 2.0;
 }
 
-static void SetSaverOpacity(AppState *state)
+static void UpdateSaverFrame(AppState *state)
 {
     if (state->hwnd != NULL) {
         BYTE alpha = CurrentFadeAlpha(state);
-        SetLayeredWindowAttributes(state->hwnd, 0, alpha, LWA_ALPHA);
+        InvalidateRect(state->hwnd, NULL, FALSE);
 
         if (state->dismissing && alpha == 0) {
             DestroyWindow(state->hwnd);
@@ -731,17 +790,97 @@ static void PaintSaver(HWND hwnd, AppState *state)
 {
     PAINTSTRUCT paint;
     HDC hdc;
+    HDC bitmap_dc;
     RECT client;
-    HBRUSH brush;
+    HGDIOBJ old_bitmap;
+    BYTE alpha;
 
-    (void)state;
     hdc = BeginPaint(hwnd, &paint);
     GetClientRect(hwnd, &client);
-    brush = CreateSolidBrush(RGB(0, 0, 0));
-    FillRect(hdc, &client, brush);
-    DeleteObject(brush);
+
+    if (state->desktop_bitmap != NULL) {
+        bitmap_dc = CreateCompatibleDC(hdc);
+        if (bitmap_dc != NULL) {
+            old_bitmap = SelectObject(bitmap_dc, state->desktop_bitmap);
+            BitBlt(
+                hdc,
+                0,
+                0,
+                client.right - client.left,
+                client.bottom - client.top,
+                bitmap_dc,
+                0,
+                0,
+                SRCCOPY);
+            SelectObject(bitmap_dc, old_bitmap);
+            DeleteDC(bitmap_dc);
+        }
+    } else {
+        HBRUSH brush = CreateSolidBrush(RGB(0, 0, 0));
+        FillRect(hdc, &client, brush);
+        DeleteObject(brush);
+    }
+
+    alpha = CurrentFadeAlpha(state);
+    PaintBlackOverlay(hdc, &client, alpha);
 
     EndPaint(hwnd, &paint);
+}
+
+static void PaintBlackOverlay(HDC hdc, const RECT *client, BYTE alpha)
+{
+    HDC overlay_dc;
+    HBITMAP overlay_bitmap;
+    HGDIOBJ old_bitmap;
+    RECT source_rect;
+    HBRUSH black_brush;
+    BLENDFUNCTION blend;
+
+    if (alpha == 0) {
+        return;
+    }
+
+    overlay_dc = CreateCompatibleDC(hdc);
+    if (overlay_dc == NULL) {
+        return;
+    }
+
+    overlay_bitmap = CreateCompatibleBitmap(hdc, 1, 1);
+    if (overlay_bitmap == NULL) {
+        DeleteDC(overlay_dc);
+        return;
+    }
+
+    old_bitmap = SelectObject(overlay_dc, overlay_bitmap);
+    source_rect.left = 0;
+    source_rect.top = 0;
+    source_rect.right = 1;
+    source_rect.bottom = 1;
+    black_brush = CreateSolidBrush(RGB(0, 0, 0));
+    FillRect(overlay_dc, &source_rect, black_brush);
+    DeleteObject(black_brush);
+
+    blend.BlendOp = AC_SRC_OVER;
+    blend.BlendFlags = 0;
+    blend.SourceConstantAlpha = alpha;
+    blend.AlphaFormat = 0;
+
+    AlphaBlend(
+        hdc,
+        client->left,
+        client->top,
+        client->right - client->left,
+        client->bottom - client->top,
+        overlay_dc,
+        0,
+        0,
+        1,
+        1,
+        blend);
+
+    SelectObject(overlay_dc, old_bitmap);
+    DeleteObject(overlay_bitmap);
+    DeleteDC(overlay_dc);
 }
 
 static void PaintPreview(HWND hwnd, AppState *state)
@@ -786,12 +925,20 @@ static void DismissSaver(HWND hwnd)
         return;
     }
 
-    /* Start a one-second fade-out from whatever opacity is currently visible. */
+    /* Start a configured fade-out from whatever darkness is currently visible. */
     state->dismiss_start_alpha = CurrentFadeAlpha(state);
     state->dismiss_start_tick = GetTickCount64();
     state->dismissing = TRUE;
     SetTimer(hwnd, TIMER_ID, OPACITY_TIMER_INTERVAL_MS, NULL);
-    SetSaverOpacity(state);
+    UpdateSaverFrame(state);
+}
+
+static void ReleaseCapturedDesktop(AppState *state)
+{
+    if (state->desktop_bitmap != NULL) {
+        DeleteObject(state->desktop_bitmap);
+        state->desktop_bitmap = NULL;
+    }
 }
 
 static void HideCursor(AppState *state)
@@ -822,7 +969,7 @@ static void ShowConfigurationDialog(HWND owner)
 {
     MessageBoxW(
         owner,
-        L"Dim Screensaver C fades a transparent black fullscreen window before optionally locking Windows. Edit the .ini file next to the .scr file to change FadeInSeconds, FadeOutSeconds, and LockWorkstation.",
+        L"Dim Screensaver captures the desktop, dims that captured image, then optionally locks Windows.\n\nEdit the .ini file next to the .scr file to change FadeInSeconds, FadeOutSeconds, and LockWorkstation.\n\nIn Windows Screen Saver Settings, leave \"On resume, display logon screen\" turned off so the saver can capture the visible desktop before locking.",
         L"Dim Screensaver C",
         MB_OK | MB_ICONINFORMATION);
 }

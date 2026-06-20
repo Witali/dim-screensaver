@@ -15,7 +15,7 @@ namespace DimScreensaver
         private const int DefaultFadeInDurationMs = 10000;
         private const int DefaultFadeOutDurationMs = 1000;
         private const bool DefaultLockWorkstation = true;
-        private const int OpacityTimerIntervalMs = 67;
+        private const int FrameTimerIntervalMs = 67;
         private const float FinalDarkness = 0.94f;
         private const int MinSettingSeconds = 1;
         private const int MaxSettingSeconds = 3600;
@@ -41,8 +41,9 @@ namespace DimScreensaver
                     break;
                 case ScreenSaverCommandKind.Configure:
                     MessageBox.Show(
-                        "Dim Screensaver fades a transparent black fullscreen overlay before optionally locking Windows.\n\n" +
-                        "Edit the .ini file next to the .scr file to change FadeInSeconds, FadeOutSeconds, and LockWorkstation.",
+                        "Dim Screensaver captures the desktop, dims that captured image, then optionally locks Windows.\n\n" +
+                        "Edit the .ini file next to the .scr file to change FadeInSeconds, FadeOutSeconds, and LockWorkstation.\n\n" +
+                        "In Windows Screen Saver Settings, leave \"On resume, display logon screen\" turned off so the saver can capture the visible desktop before locking.",
                         "Dim Screensaver",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Information);
@@ -234,17 +235,16 @@ namespace DimScreensaver
             public ScreensaverContext(ScreensaverSettings settings)
             {
                 this.settings = settings;
-                Screen[] screens = Screen.AllScreens;
-                openForms = screens.Length;
-
                 HideCursor();
+                List<ScreenCapture> captures = CaptureScreens();
+                openForms = captures.Count;
 
-                foreach (Screen screen in screens)
+                foreach (ScreenCapture capture in captures)
                 {
-                    // Each monitor gets its own transparent black overlay window.
-                    // This handles negative coordinates used by monitors positioned
-                    // left/above the primary display.
-                    DimForm form = new DimForm(screen.Bounds, this.settings.FadeInDurationMs, this.settings.FadeOutDurationMs, OpacityTimerIntervalMs, FinalDarkness);
+                    // Each monitor gets its own captured bitmap and borderless
+                    // window. This avoids stitching screens together and handles
+                    // negative monitor coordinates.
+                    DimForm form = new DimForm(capture.Bitmap, capture.Bounds, this.settings.FadeInDurationMs, this.settings.FadeOutDurationMs, FrameTimerIntervalMs, FinalDarkness);
                     form.FormClosed += HandleFormClosed;
                     form.ExitRequested += CloseAll;
                     form.LockRequested += LockWorkstationAndClose;
@@ -291,6 +291,33 @@ namespace DimScreensaver
                 }
 
                 cursorHidden = false;
+            }
+
+            private static List<ScreenCapture> CaptureScreens()
+            {
+                List<ScreenCapture> captures = new List<ScreenCapture>();
+
+                foreach (Screen screen in Screen.AllScreens)
+                {
+                    Rectangle bounds = screen.Bounds;
+                    Bitmap bitmap = new Bitmap(bounds.Width, bounds.Height);
+
+                    using (Graphics graphics = Graphics.FromImage(bitmap))
+                    {
+                        graphics.Clear(Color.Black);
+                        try
+                        {
+                            graphics.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size, CopyPixelOperation.SourceCopy);
+                        }
+                        catch (Exception)
+                        {
+                        }
+                    }
+
+                    captures.Add(new ScreenCapture(bitmap, bounds));
+                }
+
+                return captures;
             }
 
             private void CloseAll(object sender, EventArgs e)
@@ -341,10 +368,24 @@ namespace DimScreensaver
             }
         }
 
+        private sealed class ScreenCapture
+        {
+            public ScreenCapture(Bitmap bitmap, Rectangle bounds)
+            {
+                Bitmap = bitmap;
+                Bounds = bounds;
+            }
+
+            public Bitmap Bitmap { get; private set; }
+
+            public Rectangle Bounds { get; private set; }
+        }
+
         private sealed class DimForm : Form
         {
             private const int WakeMovePixels = 6;
 
+            private readonly Bitmap screenCapture;
             private readonly Stopwatch stopwatch = new Stopwatch();
             private readonly Timer timer = new Timer();
             private readonly int fadeDurationMs;
@@ -354,14 +395,16 @@ namespace DimScreensaver
             private bool ignoreInitialMouseMove = true;
             private bool exiting;
             private long exitStartedAtMs;
-            private double exitStartOpacity;
+            private int currentDarkness;
+            private int exitStartDarkness;
             private bool lockRequested;
 
             public event EventHandler ExitRequested;
             public event EventHandler LockRequested;
 
-            public DimForm(Rectangle bounds, int fadeDurationMs, int exitFadeDurationMs, int opacityTimerIntervalMs, float finalDarkness)
+            public DimForm(Bitmap screenCapture, Rectangle bounds, int fadeDurationMs, int exitFadeDurationMs, int frameTimerIntervalMs, float finalDarkness)
             {
+                this.screenCapture = screenCapture;
                 this.fadeDurationMs = fadeDurationMs;
                 this.exitFadeDurationMs = exitFadeDurationMs;
                 this.finalDarkness = finalDarkness;
@@ -373,14 +416,13 @@ namespace DimScreensaver
                 KeyPreview = true;
                 ShowInTaskbar = false;
                 StartPosition = FormStartPosition.Manual;
-                Opacity = 0d;
                 // Use SetBounds after the border style is removed, so the client
                 // area matches the monitor rectangle exactly.
                 SetBounds(bounds.X, bounds.Y, bounds.Width, bounds.Height);
                 TopMost = true;
                 WindowState = FormWindowState.Normal;
 
-                timer.Interval = opacityTimerIntervalMs;
+                timer.Interval = frameTimerIntervalMs;
                 timer.Tick += HandleTimerTick;
             }
 
@@ -403,7 +445,7 @@ namespace DimScreensaver
                 base.OnShown(e);
                 lastMousePosition = Cursor.Position;
                 stopwatch.Start();
-                UpdateOpacity();
+                UpdateFrame();
                 timer.Start();
                 Activate();
             }
@@ -412,11 +454,17 @@ namespace DimScreensaver
             {
                 base.OnPaint(e);
 
-                // The form itself is faded by layered-window opacity. Paint a plain
-                // black surface and let Windows blend the whole window over desktop.
-                using (SolidBrush blackBrush = new SolidBrush(Color.Black))
+                // Draw the captured desktop first, then dim that frozen image.
+                e.Graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
+                e.Graphics.PixelOffsetMode = PixelOffsetMode.Half;
+                e.Graphics.DrawImage(screenCapture, ClientRectangle);
+
+                if (currentDarkness > 0)
                 {
-                    e.Graphics.FillRectangle(blackBrush, ClientRectangle);
+                    using (SolidBrush dimBrush = new SolidBrush(Color.FromArgb(currentDarkness, Color.Black)))
+                    {
+                        e.Graphics.FillRectangle(dimBrush, ClientRectangle);
+                    }
                 }
             }
 
@@ -462,15 +510,16 @@ namespace DimScreensaver
                 timer.Stop();
                 timer.Tick -= HandleTimerTick;
                 timer.Dispose();
+                screenCapture.Dispose();
                 base.OnFormClosed(e);
             }
 
             private void HandleTimerTick(object sender, EventArgs e)
             {
-                UpdateOpacity();
+                UpdateFrame();
             }
 
-            private void UpdateOpacity()
+            private void UpdateFrame()
             {
                 float progress;
                 float eased;
@@ -479,7 +528,8 @@ namespace DimScreensaver
                 {
                     progress = Clamp((stopwatch.ElapsedMilliseconds - exitStartedAtMs) / (float)exitFadeDurationMs, 0f, 1f);
                     eased = EaseInOutCubic(progress);
-                    Opacity = Math.Max(0d, exitStartOpacity * (1d - eased));
+                    currentDarkness = Math.Max(0, (int)Math.Round(exitStartDarkness * (1d - eased)));
+                    Invalidate();
 
                     if (progress >= 1f)
                     {
@@ -491,7 +541,8 @@ namespace DimScreensaver
 
                 progress = Clamp(stopwatch.ElapsedMilliseconds / (float)fadeDurationMs, 0f, 1f);
                 eased = EaseInOutCubic(progress);
-                Opacity = Math.Min(1d, finalDarkness * eased);
+                currentDarkness = Math.Min(255, (int)Math.Round(255 * finalDarkness * eased));
+                Invalidate();
 
                 if (progress >= 1f)
                 {
@@ -514,14 +565,14 @@ namespace DimScreensaver
 
                 exiting = true;
                 exitStartedAtMs = stopwatch.ElapsedMilliseconds;
-                exitStartOpacity = Opacity;
+                exitStartDarkness = currentDarkness;
 
                 if (!timer.Enabled)
                 {
                     timer.Start();
                 }
 
-                UpdateOpacity();
+                UpdateFrame();
             }
 
             private void RequestExit()

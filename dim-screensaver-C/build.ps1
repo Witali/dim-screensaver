@@ -43,7 +43,7 @@ try {
     New-Item -ItemType Directory -Force -Path .\publish | Out-Null
 
     $optimization = if ($Configuration -eq "Release") { "/O2 /MT" } else { "/Od /Zi /MTd" }
-    $compile = "cl.exe /nologo /W4 /std:c17 /TC /DUNICODE /D_UNICODE $optimization /Fo:publish\ dim_screensaver.c /link /SUBSYSTEM:WINDOWS /OUT:publish\DimScreensaver.exe user32.lib gdi32.lib shell32.lib"
+    $compile = "cl.exe /nologo /W4 /std:c17 /TC /DUNICODE /D_UNICODE $optimization /Fo:publish\ dim_screensaver.c /link /SUBSYSTEM:WINDOWS /OUT:publish\DimScreensaver.exe user32.lib gdi32.lib msimg32.lib shell32.lib"
     $manifest = "mt.exe -nologo -manifest app.manifest -outputresource:publish\DimScreensaver.exe;#1"
     $command = "call `"$vcvars`" >nul && $compile && $manifest"
 

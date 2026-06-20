@@ -1,7 +1,7 @@
 # Dim Screensaver
 
-Windows screen saver that opens transparent black overlay windows over all monitors, then smoothly fades them toward opacity over a configurable delay.
-Opacity is updated at about 15 frames per second.
+Windows screen saver that captures each monitor, opens borderless topmost windows over them, then draws each captured image with an increasingly dark black layer.
+The dimmed frame is redrawn at about 15 frames per second.
 
 ## Build
 
@@ -49,5 +49,7 @@ If there is no input during the configured dimming period, the saver calls Windo
 ## Install
 
 Copy `publish\DimScreensaver.scr` and `publish\DimScreensaver.ini` to `C:\Windows\System32`, then select **DimScreensaver** in Windows Screen Saver Settings.
+
+Leave the Windows **On resume, display logon screen** checkbox turned off. This saver performs its own delayed lock with `LockWorkstation=true`; the Windows checkbox can make Windows switch away from the visible desktop before the saver captures it.
 
 You can also right-click the `.scr` file and choose **Install**.
