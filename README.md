@@ -1,12 +1,12 @@
 # Dim Screensaver
 
-Windows screen saver experiments that capture the current desktop, then dim that captured image over a configurable delay.
+Windows screen saver experiments that show the current Windows desktop wallpaper, then dim that image over a configurable delay.
 Both implementations redraw the dimmed frame at about 15 frames per second.
 
 Implementations:
 
-- [`dim-screensaver-C`](dim-screensaver-C): native Win32 C version using a captured desktop bitmap and a black dim layer.
-- [`dim-screensaver-C-sharp`](dim-screensaver-C-sharp): C# / Windows Forms version using per-monitor screenshots and black dim layers.
+- [`dim-screensaver-C`](dim-screensaver-C): native Win32 C version using the configured wallpaper image and a black dim layer.
+- [`dim-screensaver-C-sharp`](dim-screensaver-C-sharp): C# / Windows Forms version using the configured wallpaper image and black dim layers.
 
 ## Build
 
@@ -50,6 +50,16 @@ Set `FadeInSeconds` to `10`, `20`, or `60` to give the user 10 seconds, 20 secon
 
 The older `LockDelaySeconds` key is still accepted as an alias for `FadeInSeconds`.
 
+## Diagnostics
+
+On startup, Dim Screensaver writes `DimScreensaver.log` next to the `.scr` file. If Windows does not allow writing there, it falls back to:
+
+```text
+%LOCALAPPDATA%\DimScreensaver\DimScreensaver.log
+```
+
+The log records the command line, selected mode, settings file path, desktop name, virtual screen bounds, wallpaper loading result, and any emergency desktop-capture fallback result.
+
 ## Try It
 
 ```powershell
@@ -64,9 +74,9 @@ If there is no input during the configured dimming period, the saver calls Windo
 
 Configure Dim Screensaver as a normal Windows screen saver, and set its wait time earlier than the display power-off timeout. For example, start the screen saver after 4 minutes, then configure Windows power settings to turn the display off later.
 
-Leave the Windows **On resume, display logon screen** checkbox turned off. Dim Screensaver handles locking itself with `LockWorkstation=true` after the fade-in completes. If the Windows checkbox is enabled, Windows can switch away from the visible desktop before the saver captures it, so the captured image may already be blank or lock-screen content.
+Leave the Windows **On resume, display logon screen** checkbox turned off. Dim Screensaver handles locking itself with `LockWorkstation=true` after the fade-in completes.
 
-That way the saver gently dims the desktop first, and Windows turns the physical display off only after the later power-management timeout.
+That way the saver gently dims the current wallpaper first, and Windows turns the physical display off only after the later power-management timeout.
 If you react before the configured dimming finishes, the saver fades out and exits without locking. If you do not react, Windows is locked and requires sign-in again.
 
 ![Windows Screen Saver Settings](assets/screen-saver-settings.png)

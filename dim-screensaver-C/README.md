@@ -2,7 +2,7 @@
 
 Native Win32 implementation of Dim Screensaver.
 
-It captures the current desktop, opens a borderless topmost window over all monitors, then draws the captured image with an increasingly dark black layer.
+It loads the current Windows desktop wallpaper, opens a borderless topmost window over all monitors, then draws the wallpaper image with an increasingly dark black layer.
 The dimmed frame is redrawn at about 15 frames per second.
 
 ## Build
@@ -34,6 +34,10 @@ Use `FadeInSeconds=10`, `20`, or `60` for 10 seconds, 20 seconds, or 1 minute be
 
 The older `LockDelaySeconds` key is still accepted as an alias for `FadeInSeconds`.
 
+## Diagnostics
+
+The saver writes `DimScreensaver.log` next to the `.scr` file, or falls back to `%LOCALAPPDATA%\DimScreensaver\DimScreensaver.log` if that folder is not writable.
+
 ## Try It
 
 ```powershell
@@ -44,4 +48,4 @@ Move the mouse, click, or press any key to fade it out over 1 second and close i
 The mouse cursor is hidden before the fade starts and restored on exit.
 If there is no input during the configured dimming period, the saver calls Windows Lock Workstation after the fade completes.
 
-When installing it in Windows Screen Saver Settings, leave the Windows **On resume, display logon screen** checkbox turned off. This saver performs its own delayed lock with `LockWorkstation=true`; the Windows checkbox can make Windows switch away from the visible desktop before the saver captures it.
+When installing it in Windows Screen Saver Settings, leave the Windows **On resume, display logon screen** checkbox turned off. This saver performs its own delayed lock with `LockWorkstation=true`.

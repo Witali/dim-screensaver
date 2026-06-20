@@ -6,6 +6,7 @@ using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows.Forms;
 
 namespace DimScreensaver
@@ -19,6 +20,9 @@ namespace DimScreensaver
         private const float FinalDarkness = 0.94f;
         private const int MinSettingSeconds = 1;
         private const int MaxSettingSeconds = 3600;
+        private const int SpiGetDesktopWallpaper = 0x0073;
+        private const int UoiName = 2;
+        private static string logPath;
 
         [STAThread]
         private static void Main(string[] args)
@@ -29,11 +33,14 @@ namespace DimScreensaver
             EnableDpiAwareness();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+            Log("process start command_line=\"{0}\" executable=\"{1}\"", Environment.CommandLine, Application.ExecutablePath);
 
             // Windows launches .scr files with small command-line switches:
             // /s runs the saver, /p embeds a preview into Screen Saver Settings,
             // and /c opens configuration.
             ScreenSaverCommand command = ScreenSaverCommand.Parse(args);
+            Log("parsed command kind={0} preview_parent=0x{1:X}", command.Kind, command.PreviewParentHandle.ToInt64());
+
             switch (command.Kind)
             {
                 case ScreenSaverCommandKind.Preview:
@@ -41,9 +48,9 @@ namespace DimScreensaver
                     break;
                 case ScreenSaverCommandKind.Configure:
                     MessageBox.Show(
-                        "Dim Screensaver captures the desktop, dims that captured image, then optionally locks Windows.\n\n" +
+                        "Dim Screensaver shows the current Windows desktop wallpaper, dims that image, then optionally locks Windows.\n\n" +
                         "Edit the .ini file next to the .scr file to change FadeInSeconds, FadeOutSeconds, and LockWorkstation.\n\n" +
-                        "In Windows Screen Saver Settings, leave \"On resume, display logon screen\" turned off so the saver can capture the visible desktop before locking.",
+                        "In Windows Screen Saver Settings, leave \"On resume, display logon screen\" turned off because this saver performs its own delayed lock.",
                         "Dim Screensaver",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Information);
@@ -63,15 +70,60 @@ namespace DimScreensaver
             }
         }
 
+        private static void Log(string format, params object[] args)
+        {
+            try
+            {
+                string message = args.Length == 0
+                    ? format
+                    : string.Format(CultureInfo.InvariantCulture, format, args);
+                string line = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture) + " " + message + Environment.NewLine;
+                File.AppendAllText(GetLogPath(), line, Encoding.UTF8);
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        private static string GetLogPath()
+        {
+            if (logPath != null)
+            {
+                return logPath;
+            }
+
+            string siblingPath = Path.ChangeExtension(Application.ExecutablePath, ".log");
+            try
+            {
+                using (new FileStream(siblingPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete))
+                {
+                }
+
+                logPath = siblingPath;
+                return logPath;
+            }
+            catch (Exception)
+            {
+            }
+
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string directory = Path.Combine(localAppData, "DimScreensaver");
+            Directory.CreateDirectory(directory);
+            logPath = Path.Combine(directory, "DimScreensaver.log");
+            return logPath;
+        }
+
         private static ScreensaverSettings LoadSettings()
         {
             ScreensaverSettings settings = ScreensaverSettings.CreateDefault();
             string settingsPath = Path.ChangeExtension(Application.ExecutablePath, ".ini");
+            Log("settings path=\"{0}\"", settingsPath);
 
             try
             {
                 if (!File.Exists(settingsPath))
                 {
+                    Log("settings file missing, using defaults");
                     return settings;
                 }
 
@@ -132,9 +184,15 @@ namespace DimScreensaver
             }
             catch (Exception)
             {
+                Log("settings read failed, using defaults");
                 return ScreensaverSettings.CreateDefault();
             }
 
+            Log(
+                "settings resolved fade_in_ms={0} fade_out_ms={1} lock_workstation={2}",
+                settings.FadeInDurationMs,
+                settings.FadeOutDurationMs,
+                settings.LockWorkstation);
             return settings;
         }
 
@@ -173,6 +231,27 @@ namespace DimScreensaver
 
             value = false;
             return false;
+        }
+
+        private static void LogCurrentDesktopName()
+        {
+            IntPtr desktop = GetThreadDesktop(GetCurrentThreadId());
+            if (desktop == IntPtr.Zero)
+            {
+                Log("thread desktop unavailable error={0}", Marshal.GetLastWin32Error());
+                return;
+            }
+
+            StringBuilder name = new StringBuilder(256);
+            int needed;
+            if (GetUserObjectInformation(desktop, UoiName, name, name.Capacity * 2, out needed))
+            {
+                Log("thread desktop name=\"{0}\"", name);
+            }
+            else
+            {
+                Log("thread desktop name query failed error={0} needed={1}", Marshal.GetLastWin32Error(), needed);
+            }
         }
 
         private static void EnableDpiAwareness()
@@ -236,6 +315,8 @@ namespace DimScreensaver
             {
                 this.settings = settings;
                 HideCursor();
+                Log("cursor hidden before background load");
+                LogCurrentDesktopName();
                 List<ScreenCapture> captures = CaptureScreens();
                 openForms = captures.Count;
 
@@ -244,7 +325,7 @@ namespace DimScreensaver
                     // Each monitor gets its own captured bitmap and borderless
                     // window. This avoids stitching screens together and handles
                     // negative monitor coordinates.
-                    DimForm form = new DimForm(capture.Bitmap, capture.Bounds, this.settings.FadeInDurationMs, this.settings.FadeOutDurationMs, FrameTimerIntervalMs, FinalDarkness);
+                    DimForm form = new DimForm(capture.Bitmap, capture.Bounds, this.settings.FadeInDurationMs, this.settings.FadeOutDurationMs, FrameTimerIntervalMs, FinalDarkness, this.settings.LockWorkstation);
                     form.FormClosed += HandleFormClosed;
                     form.ExitRequested += CloseAll;
                     form.LockRequested += LockWorkstationAndClose;
@@ -296,28 +377,171 @@ namespace DimScreensaver
             private static List<ScreenCapture> CaptureScreens()
             {
                 List<ScreenCapture> captures = new List<ScreenCapture>();
+                Log("build wallpaper backgrounds begin count={0}", Screen.AllScreens.Length);
 
                 foreach (Screen screen in Screen.AllScreens)
                 {
                     Rectangle bounds = screen.Bounds;
-                    Bitmap bitmap = new Bitmap(bounds.Width, bounds.Height);
+                    Bitmap bitmap = CreateWallpaperBackground(bounds);
+                    bool copied = false;
 
-                    using (Graphics graphics = Graphics.FromImage(bitmap))
+                    if (bitmap == null)
                     {
-                        graphics.Clear(Color.Black);
-                        try
+                        Log(
+                            "wallpaper background unavailable bounds=({0},{1},{2},{3}); attempting desktop capture fallback",
+                            bounds.X,
+                            bounds.Y,
+                            bounds.Width,
+                            bounds.Height);
+                        bitmap = new Bitmap(bounds.Width, bounds.Height);
+
+                        using (Graphics graphics = Graphics.FromImage(bitmap))
                         {
-                            graphics.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size, CopyPixelOperation.SourceCopy);
-                        }
-                        catch (Exception)
-                        {
+                            graphics.Clear(Color.Black);
+                            try
+                            {
+                                graphics.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size, CopyPixelOperation.SourceCopy);
+                                copied = true;
+                            }
+                            catch (Exception ex)
+                            {
+                                Log(
+                                    "CopyFromScreen failed bounds=({0},{1},{2},{3}) exception={4}: {5}",
+                                    bounds.X,
+                                    bounds.Y,
+                                    bounds.Width,
+                                    bounds.Height,
+                                    ex.GetType().Name,
+                                    ex.Message);
+                            }
                         }
                     }
 
+                    Log(
+                        "screen background ready copied_from_screen={0} bounds=({1},{2},{3},{4}) primary={5} device=\"{6}\"",
+                        copied,
+                        bounds.X,
+                        bounds.Y,
+                        bounds.Width,
+                        bounds.Height,
+                        screen.Primary,
+                        screen.DeviceName);
+                    LogBitmapPixels(bitmap);
                     captures.Add(new ScreenCapture(bitmap, bounds));
                 }
 
                 return captures;
+            }
+
+            private static Bitmap CreateWallpaperBackground(Rectangle bounds)
+            {
+                string wallpaperPath = GetCurrentWallpaperPath();
+                if (string.IsNullOrEmpty(wallpaperPath))
+                {
+                    return null;
+                }
+
+                try
+                {
+                    using (Image wallpaper = Image.FromFile(wallpaperPath))
+                    {
+                        Bitmap bitmap = new Bitmap(bounds.Width, bounds.Height);
+                        using (Graphics graphics = Graphics.FromImage(bitmap))
+                        {
+                            Rectangle destination = GetCoverDestination(bounds.Size, wallpaper.Size);
+                            graphics.Clear(Color.Black);
+                            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                            graphics.DrawImage(wallpaper, destination);
+                        }
+
+                        Log(
+                            "wallpaper background ready source=({0},{1}) dest=({2},{3}) path=\"{4}\"",
+                            wallpaper.Width,
+                            wallpaper.Height,
+                            bounds.Width,
+                            bounds.Height,
+                            wallpaperPath);
+                        return bitmap;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log(
+                        "wallpaper background load failed path=\"{0}\" exception={1}: {2}",
+                        wallpaperPath,
+                        ex.GetType().Name,
+                        ex.Message);
+                    return null;
+                }
+            }
+
+            private static Rectangle GetCoverDestination(Size destinationSize, Size sourceSize)
+            {
+                double scaleX = destinationSize.Width / (double)sourceSize.Width;
+                double scaleY = destinationSize.Height / (double)sourceSize.Height;
+                double scale = Math.Max(scaleX, scaleY);
+                int width = (int)Math.Round(sourceSize.Width * scale);
+                int height = (int)Math.Round(sourceSize.Height * scale);
+                return new Rectangle(
+                    (destinationSize.Width - width) / 2,
+                    (destinationSize.Height - height) / 2,
+                    width,
+                    height);
+            }
+
+            private static string GetCurrentWallpaperPath()
+            {
+                StringBuilder path = new StringBuilder(260);
+                if (SystemParametersInfo(SpiGetDesktopWallpaper, path.Capacity, path, 0) && path.Length > 0)
+                {
+                    string systemPath = path.ToString();
+                    if (File.Exists(systemPath))
+                    {
+                        Log("wallpaper path from SystemParametersInfo=\"{0}\"", systemPath);
+                        return systemPath;
+                    }
+
+                    Log("wallpaper path from SystemParametersInfo is not readable=\"{0}\"", systemPath);
+                }
+                else
+                {
+                    Log("SystemParametersInfo(SPI_GETDESKWALLPAPER) returned no readable path error={0}", Marshal.GetLastWin32Error());
+                }
+
+                string transcodedPath = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "Microsoft",
+                    "Windows",
+                    "Themes",
+                    "TranscodedWallpaper");
+                if (File.Exists(transcodedPath))
+                {
+                    Log("wallpaper path from TranscodedWallpaper fallback=\"{0}\"", transcodedPath);
+                    return transcodedPath;
+                }
+
+                Log("transcoded wallpaper fallback is not readable=\"{0}\"", transcodedPath);
+                return null;
+            }
+
+            private static void LogBitmapPixels(Bitmap bitmap)
+            {
+                Color topLeft = bitmap.GetPixel(0, 0);
+                Color center = bitmap.GetPixel(bitmap.Width / 2, bitmap.Height / 2);
+                Color bottomRight = bitmap.GetPixel(Math.Max(0, bitmap.Width - 1), Math.Max(0, bitmap.Height - 1));
+
+                Log(
+                    "capture pixels top_left=#{0:X2}{1:X2}{2:X2} center=#{3:X2}{4:X2}{5:X2} bottom_right=#{6:X2}{7:X2}{8:X2}",
+                    topLeft.R,
+                    topLeft.G,
+                    topLeft.B,
+                    center.R,
+                    center.G,
+                    center.B,
+                    bottomRight.R,
+                    bottomRight.G,
+                    bottomRight.B);
             }
 
             private void CloseAll(object sender, EventArgs e)
@@ -391,6 +615,7 @@ namespace DimScreensaver
             private readonly int fadeDurationMs;
             private readonly int exitFadeDurationMs;
             private readonly float finalDarkness;
+            private readonly bool showLockCountdown;
             private Point lastMousePosition;
             private bool ignoreInitialMouseMove = true;
             private bool exiting;
@@ -402,12 +627,13 @@ namespace DimScreensaver
             public event EventHandler ExitRequested;
             public event EventHandler LockRequested;
 
-            public DimForm(Bitmap screenCapture, Rectangle bounds, int fadeDurationMs, int exitFadeDurationMs, int frameTimerIntervalMs, float finalDarkness)
+            public DimForm(Bitmap screenCapture, Rectangle bounds, int fadeDurationMs, int exitFadeDurationMs, int frameTimerIntervalMs, float finalDarkness, bool showLockCountdown)
             {
                 this.screenCapture = screenCapture;
                 this.fadeDurationMs = fadeDurationMs;
                 this.exitFadeDurationMs = exitFadeDurationMs;
                 this.finalDarkness = finalDarkness;
+                this.showLockCountdown = showLockCountdown;
 
                 AutoScaleMode = AutoScaleMode.None;
                 BackColor = Color.Black;
@@ -454,7 +680,7 @@ namespace DimScreensaver
             {
                 base.OnPaint(e);
 
-                // Draw the captured desktop first, then dim that frozen image.
+                // Draw the prepared background first, then dim that frozen image.
                 e.Graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
                 e.Graphics.PixelOffsetMode = PixelOffsetMode.Half;
                 e.Graphics.DrawImage(screenCapture, ClientRectangle);
@@ -466,6 +692,8 @@ namespace DimScreensaver
                         e.Graphics.FillRectangle(dimBrush, ClientRectangle);
                     }
                 }
+
+                PaintLockCountdown(e.Graphics);
             }
 
             protected override void OnMouseMove(MouseEventArgs e)
@@ -512,6 +740,42 @@ namespace DimScreensaver
                 timer.Dispose();
                 screenCapture.Dispose();
                 base.OnFormClosed(e);
+            }
+
+            private void PaintLockCountdown(Graphics graphics)
+            {
+                if (!showLockCountdown || exiting || lockRequested)
+                {
+                    return;
+                }
+
+                long remainingMs = fadeDurationMs - stopwatch.ElapsedMilliseconds;
+                int remainingSeconds = remainingMs <= 0
+                    ? 0
+                    : (int)Math.Ceiling(remainingMs / 1000d);
+                int fontHeight = ClientSize.Height / 18;
+                int margin = ClientSize.Height / 32;
+
+                fontHeight = Math.Max(28, Math.Min(72, fontHeight));
+                margin = Math.Max(24, Math.Min(72, margin));
+
+                using (Font font = new Font("Segoe UI", fontHeight, FontStyle.Bold, GraphicsUnit.Pixel))
+                using (StringFormat format = new StringFormat { Alignment = StringAlignment.Far, LineAlignment = StringAlignment.Far })
+                using (SolidBrush shadowBrush = new SolidBrush(Color.Black))
+                using (SolidBrush textBrush = new SolidBrush(Color.FromArgb(245, 245, 245)))
+                {
+                    string text = remainingSeconds.ToString(CultureInfo.InvariantCulture);
+                    RectangleF textRect = new RectangleF(
+                        margin,
+                        margin,
+                        Math.Max(1, ClientSize.Width - margin * 2),
+                        Math.Max(1, ClientSize.Height - margin * 2));
+                    RectangleF shadowRect = textRect;
+                    shadowRect.Offset(2, 2);
+
+                    graphics.DrawString(text, font, shadowBrush, shadowRect, format);
+                    graphics.DrawString(text, font, textBrush, textRect, format);
+                }
             }
 
             private void HandleTimerTick(object sender, EventArgs e)
@@ -773,6 +1037,18 @@ namespace DimScreensaver
 
         [DllImport("user32.dll")]
         private static extern bool LockWorkStation();
+
+        [DllImport("kernel32.dll")]
+        private static extern int GetCurrentThreadId();
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr GetThreadDesktop(int threadId);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool GetUserObjectInformation(IntPtr objectHandle, int index, StringBuilder information, int length, out int needed);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool SystemParametersInfo(int action, int parameter, StringBuilder value, int winIni);
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool SetProcessDPIAware();

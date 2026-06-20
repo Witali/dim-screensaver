@@ -1,6 +1,6 @@
 # Dim Screensaver
 
-Windows screen saver that captures each monitor, opens borderless topmost windows over them, then draws each captured image with an increasingly dark black layer.
+Windows screen saver that loads the current Windows desktop wallpaper, opens borderless topmost windows over each monitor, then draws the wallpaper image with an increasingly dark black layer.
 The dimmed frame is redrawn at about 15 frames per second.
 
 ## Build
@@ -34,6 +34,10 @@ Use `FadeInSeconds=10`, `20`, or `60` for 10 seconds, 20 seconds, or 1 minute be
 
 The older `LockDelaySeconds` key is still accepted as an alias for `FadeInSeconds`.
 
+## Diagnostics
+
+The saver writes `DimScreensaver.log` next to the `.scr` file, or falls back to `%LOCALAPPDATA%\DimScreensaver\DimScreensaver.log` if that folder is not writable.
+
 ## Try It
 
 Run the saver directly:
@@ -50,6 +54,6 @@ If there is no input during the configured dimming period, the saver calls Windo
 
 Copy `publish\DimScreensaver.scr` and `publish\DimScreensaver.ini` to `C:\Windows\System32`, then select **DimScreensaver** in Windows Screen Saver Settings.
 
-Leave the Windows **On resume, display logon screen** checkbox turned off. This saver performs its own delayed lock with `LockWorkstation=true`; the Windows checkbox can make Windows switch away from the visible desktop before the saver captures it.
+Leave the Windows **On resume, display logon screen** checkbox turned off. This saver performs its own delayed lock with `LockWorkstation=true`.
 
 You can also right-click the `.scr` file and choose **Install**.
