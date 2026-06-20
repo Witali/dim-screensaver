@@ -5,16 +5,21 @@
 #include <shellapi.h>
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 #include <wchar.h>
 #include <wctype.h>
 
 #define TIMER_ID 1
-#define FADE_DURATION_MS 10000.0
-#define EXIT_FADE_DURATION_MS 1000.0
+#define DEFAULT_FADE_IN_DURATION_MS 10000.0
+#define DEFAULT_FADE_OUT_DURATION_MS 1000.0
+#define DEFAULT_LOCK_WORKSTATION TRUE
 #define FINAL_DARKNESS 0.94
 /* 67 ms is roughly 15 FPS: smooth enough for this fade, but cheap to run. */
 #define OPACITY_TIMER_INTERVAL_MS 67
 #define WAKE_MOVE_PIXELS 6
+#define SETTINGS_MAX_BYTES 4096
+#define MIN_SETTING_SECONDS 1L
+#define MAX_SETTING_SECONDS 3600L
 
 typedef enum AppMode {
     MODE_SAVER,
@@ -27,6 +32,12 @@ typedef struct Command {
     HWND preview_parent;
 } Command;
 
+typedef struct Settings {
+    double fade_in_duration_ms;
+    double fade_out_duration_ms;
+    BOOL lock_workstation;
+} Settings;
+
 typedef struct AppState {
     HINSTANCE instance;
     AppMode mode;
@@ -38,18 +49,22 @@ typedef struct AppState {
     int virtual_height;
     ULONGLONG start_tick;
     ULONGLONG dismiss_start_tick;
+    double fade_in_duration_ms;
+    double fade_out_duration_ms;
     BYTE dismiss_start_alpha;
     POINT last_mouse;
     BOOL ignore_initial_mouse_move;
     BOOL dismissing;
+    BOOL lock_requested;
+    BOOL lock_workstation;
     BOOL cursor_hidden;
 } AppState;
 
 typedef BOOL (WINAPI *PFN_SET_PROCESS_DPI_AWARENESS_CONTEXT)(HANDLE);
 typedef BOOL (WINAPI *PFN_SET_PROCESS_DPI_AWARE)(void);
 
-static const wchar_t SaverClassName[] = L"DimScreensaverCWindow";
-static const wchar_t PreviewClassName[] = L"DimScreensaverCPreviewWindow";
+static const wchar_t SaverClassName[] = L"DimScreensaverWindow";
+static const wchar_t PreviewClassName[] = L"DimScreensaverPreviewWindow";
 
 static void EnableDpiAwareness(void);
 static Command ParseCommandLine(void);
@@ -58,6 +73,12 @@ static int RunSaver(HINSTANCE instance);
 static int RunPreview(HINSTANCE instance, HWND parent);
 static BOOL RegisterWindowClasses(HINSTANCE instance);
 static LRESULT CALLBACK SaverWindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
+static Settings LoadSettings(void);
+static BOOL GetSettingsPath(wchar_t *path, DWORD path_count);
+static char *TrimAscii(char *text);
+static BOOL EqualsIgnoreCaseAscii(const char *left, const char *right);
+static BOOL ParseSecondsAscii(char *text, long *seconds);
+static BOOL ParseBoolAscii(const char *text, BOOL *value);
 static void GetVirtualDesktopBounds(AppState *state);
 static BYTE CurrentFadeAlpha(const AppState *state);
 static double EaseInOutCubic(double value);
@@ -183,12 +204,18 @@ static HWND ParseWindowHandle(const wchar_t *text)
 static int RunSaver(HINSTANCE instance)
 {
     AppState state;
+    Settings settings;
     HWND hwnd;
     MSG message;
+
+    settings = LoadSettings();
 
     ZeroMemory(&state, sizeof(state));
     state.instance = instance;
     state.mode = MODE_SAVER;
+    state.fade_in_duration_ms = settings.fade_in_duration_ms;
+    state.fade_out_duration_ms = settings.fade_out_duration_ms;
+    state.lock_workstation = settings.lock_workstation;
     state.ignore_initial_mouse_move = TRUE;
     GetCursorPos(&state.last_mouse);
     GetVirtualDesktopBounds(&state);
@@ -308,6 +335,229 @@ static BOOL RegisterWindowClasses(HINSTANCE instance)
     return RegisterClassW(&window_class) != 0;
 }
 
+static Settings LoadSettings(void)
+{
+    Settings settings;
+    wchar_t settings_path[MAX_PATH];
+    char buffer[SETTINGS_MAX_BYTES + 1];
+    DWORD bytes_read = 0;
+    HANDLE file;
+    char *cursor;
+
+    settings.fade_in_duration_ms = DEFAULT_FADE_IN_DURATION_MS;
+    settings.fade_out_duration_ms = DEFAULT_FADE_OUT_DURATION_MS;
+    settings.lock_workstation = DEFAULT_LOCK_WORKSTATION;
+
+    if (!GetSettingsPath(settings_path, MAX_PATH)) {
+        return settings;
+    }
+
+    file = CreateFileW(
+        settings_path,
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+
+    if (file == INVALID_HANDLE_VALUE) {
+        return settings;
+    }
+
+    if (!ReadFile(file, buffer, SETTINGS_MAX_BYTES, &bytes_read, NULL)) {
+        CloseHandle(file);
+        return settings;
+    }
+
+    CloseHandle(file);
+    buffer[bytes_read] = '\0';
+
+    cursor = buffer;
+    if (bytes_read >= 3 &&
+        (unsigned char)buffer[0] == 0xEF &&
+        (unsigned char)buffer[1] == 0xBB &&
+        (unsigned char)buffer[2] == 0xBF) {
+        cursor += 3;
+    }
+
+    while (*cursor != '\0') {
+        char *line = cursor;
+        char *separator;
+        char *key;
+        char *value_text;
+        long seconds;
+        BOOL bool_value;
+
+        while (*cursor != '\0' && *cursor != '\n') {
+            cursor++;
+        }
+
+        if (*cursor == '\n') {
+            *cursor = '\0';
+            cursor++;
+        }
+
+        key = TrimAscii(line);
+        if (*key == '\0' || *key == '#' || *key == ';') {
+            continue;
+        }
+
+        separator = strchr(key, '=');
+        if (separator == NULL) {
+            continue;
+        }
+
+        *separator = '\0';
+        key = TrimAscii(key);
+        value_text = TrimAscii(separator + 1);
+
+        if (EqualsIgnoreCaseAscii(key, "FadeInSeconds") ||
+            EqualsIgnoreCaseAscii(key, "LockDelaySeconds")) {
+            if (ParseSecondsAscii(value_text, &seconds)) {
+                settings.fade_in_duration_ms = (double)seconds * 1000.0;
+            }
+            continue;
+        }
+
+        if (EqualsIgnoreCaseAscii(key, "FadeOutSeconds")) {
+            if (ParseSecondsAscii(value_text, &seconds)) {
+                settings.fade_out_duration_ms = (double)seconds * 1000.0;
+            }
+            continue;
+        }
+
+        if (EqualsIgnoreCaseAscii(key, "LockWorkstation")) {
+            if (ParseBoolAscii(value_text, &bool_value)) {
+                settings.lock_workstation = bool_value;
+            }
+            continue;
+        }
+    }
+
+    return settings;
+}
+
+static BOOL GetSettingsPath(wchar_t *path, DWORD path_count)
+{
+    DWORD length;
+    wchar_t *last_separator;
+    wchar_t *extension;
+    size_t base_length;
+
+    length = GetModuleFileNameW(NULL, path, path_count);
+    if (length == 0 || length >= path_count) {
+        return FALSE;
+    }
+
+    last_separator = wcsrchr(path, L'\\');
+    extension = wcsrchr(path, L'.');
+    if (extension == NULL || (last_separator != NULL && extension < last_separator)) {
+        extension = path + length;
+    }
+
+    base_length = (size_t)(extension - path);
+    if (base_length + 4 >= path_count) {
+        return FALSE;
+    }
+
+    extension[0] = L'.';
+    extension[1] = L'i';
+    extension[2] = L'n';
+    extension[3] = L'i';
+    extension[4] = L'\0';
+    return TRUE;
+}
+
+static char *TrimAscii(char *text)
+{
+    char *end;
+
+    while (*text == ' ' || *text == '\t' || *text == '\r' || *text == '\n') {
+        text++;
+    }
+
+    end = text + strlen(text);
+    while (end > text &&
+           (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n')) {
+        end--;
+    }
+
+    *end = '\0';
+    return text;
+}
+
+static BOOL EqualsIgnoreCaseAscii(const char *left, const char *right)
+{
+    while (*left != '\0' && *right != '\0') {
+        char left_char = *left;
+        char right_char = *right;
+
+        if (left_char >= 'A' && left_char <= 'Z') {
+            left_char = (char)(left_char - 'A' + 'a');
+        }
+
+        if (right_char >= 'A' && right_char <= 'Z') {
+            right_char = (char)(right_char - 'A' + 'a');
+        }
+
+        if (left_char != right_char) {
+            return FALSE;
+        }
+
+        left++;
+        right++;
+    }
+
+    return *left == '\0' && *right == '\0';
+}
+
+static BOOL ParseSecondsAscii(char *text, long *seconds)
+{
+    char *parsed_end;
+    long value;
+
+    value = strtol(text, &parsed_end, 10);
+    if (parsed_end == text) {
+        return FALSE;
+    }
+
+    parsed_end = TrimAscii(parsed_end);
+    if (*parsed_end != '\0') {
+        return FALSE;
+    }
+
+    if (value < MIN_SETTING_SECONDS) {
+        value = MIN_SETTING_SECONDS;
+    } else if (value > MAX_SETTING_SECONDS) {
+        value = MAX_SETTING_SECONDS;
+    }
+
+    *seconds = value;
+    return TRUE;
+}
+
+static BOOL ParseBoolAscii(const char *text, BOOL *value)
+{
+    if (EqualsIgnoreCaseAscii(text, "true") ||
+        EqualsIgnoreCaseAscii(text, "yes") ||
+        EqualsIgnoreCaseAscii(text, "on") ||
+        EqualsIgnoreCaseAscii(text, "1")) {
+        *value = TRUE;
+        return TRUE;
+    }
+
+    if (EqualsIgnoreCaseAscii(text, "false") ||
+        EqualsIgnoreCaseAscii(text, "no") ||
+        EqualsIgnoreCaseAscii(text, "off") ||
+        EqualsIgnoreCaseAscii(text, "0")) {
+        *value = FALSE;
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
 static LRESULT CALLBACK SaverWindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
 {
     AppState *state;
@@ -424,7 +674,7 @@ static BYTE CurrentFadeAlpha(const AppState *state)
     int alpha;
 
     elapsed = GetTickCount64() - (state->dismissing ? state->dismiss_start_tick : state->start_tick);
-    progress = (double)elapsed / (state->dismissing ? EXIT_FADE_DURATION_MS : FADE_DURATION_MS);
+    progress = (double)elapsed / (state->dismissing ? state->fade_out_duration_ms : state->fade_in_duration_ms);
     if (progress < 0.0) {
         progress = 0.0;
     } else if (progress > 1.0) {
@@ -466,8 +716,13 @@ static void SetSaverOpacity(AppState *state)
 
         if (state->dismissing && alpha == 0) {
             DestroyWindow(state->hwnd);
-        } else if (!state->dismissing && GetTickCount64() - state->start_tick >= (ULONGLONG)FADE_DURATION_MS) {
+        } else if (!state->dismissing && !state->lock_requested && GetTickCount64() - state->start_tick >= (ULONGLONG)state->fade_in_duration_ms) {
+            state->lock_requested = TRUE;
             KillTimer(state->hwnd, TIMER_ID);
+            if (state->lock_workstation) {
+                LockWorkStation();
+                DestroyWindow(state->hwnd);
+            }
         }
     }
 }
@@ -567,7 +822,7 @@ static void ShowConfigurationDialog(HWND owner)
 {
     MessageBoxW(
         owner,
-        L"Dim Screensaver C fades a transparent black fullscreen window to opacity over 10 seconds.",
+        L"Dim Screensaver C fades a transparent black fullscreen window before optionally locking Windows. Edit the .ini file next to the .scr file to change FadeInSeconds, FadeOutSeconds, and LockWorkstation.",
         L"Dim Screensaver C",
         MB_OK | MB_ICONINFORMATION);
 }

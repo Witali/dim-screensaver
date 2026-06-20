@@ -1,6 +1,6 @@
 # Dim Screensaver
 
-Windows screen saver experiments that dim the current desktop over 10 seconds.
+Windows screen saver experiments that dim the current desktop over a configurable delay.
 Both implementations update opacity at about 15 frames per second.
 
 Implementations:
@@ -25,28 +25,46 @@ cd .\dim-screensaver-C
 The C build is produced at:
 
 ```text
-dim-screensaver-C\publish\DimScreensaverC.scr
+dim-screensaver-C\publish\DimScreensaver.scr
+dim-screensaver-C\publish\DimScreensaver.ini
 ```
 
 The C# build is produced at:
 
 ```text
 dim-screensaver-C-sharp\publish\DimScreensaver.scr
+dim-screensaver-C-sharp\publish\DimScreensaver.ini
 ```
+
+## Settings
+
+Keep the `.ini` file next to the `.scr` file. The file name should match the screen saver file name with the extension changed to `.ini`, for example `DimScreensaver.ini` next to `DimScreensaver.scr`.
+
+```ini
+FadeInSeconds=10
+FadeOutSeconds=1
+LockWorkstation=true
+```
+
+Set `FadeInSeconds` to `10`, `20`, or `60` to give the user 10 seconds, 20 seconds, or 1 minute to react before Windows is locked. Set `FadeOutSeconds` to control how quickly the saver disappears after mouse or keyboard input. Set `LockWorkstation=false` to keep the screen dimmed without locking Windows. If the file is missing or a value cannot be read, the defaults are 10 seconds fade-in, 1 second fade-out, and `LockWorkstation=true`.
+
+The older `LockDelaySeconds` key is still accepted as an alias for `FadeInSeconds`.
 
 ## Try It
 
 ```powershell
-.\dim-screensaver-C\publish\DimScreensaverC.scr /s
+.\dim-screensaver-C\publish\DimScreensaver.scr /s
 ```
 
 Move the mouse, click, or press any key to fade it out over 1 second and close it.
 The mouse cursor is hidden before the fade starts and restored on exit.
+If there is no input during the configured dimming period, the saver calls Windows Lock Workstation after the fade completes.
 
 ## Windows Setup
 
 Configure Dim Screensaver as a normal Windows screen saver, and set its wait time earlier than the display power-off timeout. For example, start the screen saver after 4 minutes, then configure Windows power settings to turn the display off later.
 
 That way the saver gently dims the desktop first, and Windows turns the physical display off only after the later power-management timeout.
+If you react before the configured dimming finishes, the saver fades out and exits without locking. If you do not react, Windows is locked and requires sign-in again.
 
 ![Windows Screen Saver Settings](assets/screen-saver-settings.png)

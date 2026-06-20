@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Globalization;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
@@ -10,10 +12,13 @@ namespace DimScreensaver
 {
     internal static class Program
     {
-        private const int FadeDurationMs = 10000;
-        private const int ExitFadeDurationMs = 1000;
+        private const int DefaultFadeInDurationMs = 10000;
+        private const int DefaultFadeOutDurationMs = 1000;
+        private const bool DefaultLockWorkstation = true;
         private const int OpacityTimerIntervalMs = 67;
         private const float FinalDarkness = 0.94f;
+        private const int MinSettingSeconds = 1;
+        private const int MaxSettingSeconds = 3600;
 
         [STAThread]
         private static void Main(string[] args)
@@ -36,8 +41,8 @@ namespace DimScreensaver
                     break;
                 case ScreenSaverCommandKind.Configure:
                     MessageBox.Show(
-                        "Dim Screensaver fades a transparent black fullscreen overlay in over 10 seconds.\n\n" +
-                        "To install it, build the project and copy DimScreensaver.scr to a stable folder.",
+                        "Dim Screensaver fades a transparent black fullscreen overlay before optionally locking Windows.\n\n" +
+                        "Edit the .ini file next to the .scr file to change FadeInSeconds, FadeOutSeconds, and LockWorkstation.",
                         "Dim Screensaver",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Information);
@@ -51,10 +56,122 @@ namespace DimScreensaver
 
         private static void RunScreensaver()
         {
-            using (ScreensaverContext context = new ScreensaverContext())
+            using (ScreensaverContext context = new ScreensaverContext(LoadSettings()))
             {
                 Application.Run(context);
             }
+        }
+
+        private static ScreensaverSettings LoadSettings()
+        {
+            ScreensaverSettings settings = ScreensaverSettings.CreateDefault();
+            string settingsPath = Path.ChangeExtension(Application.ExecutablePath, ".ini");
+
+            try
+            {
+                if (!File.Exists(settingsPath))
+                {
+                    return settings;
+                }
+
+                foreach (string line in File.ReadAllLines(settingsPath))
+                {
+                    string trimmed = line.Trim();
+                    int separator;
+                    string key;
+                    string valueText;
+                    int seconds;
+                    bool boolValue;
+
+                    if (trimmed.Length == 0 || trimmed.StartsWith("#", StringComparison.Ordinal) || trimmed.StartsWith(";", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    separator = trimmed.IndexOf('=');
+                    if (separator < 0)
+                    {
+                        continue;
+                    }
+
+                    key = trimmed.Substring(0, separator).Trim();
+                    valueText = trimmed.Substring(separator + 1).Trim();
+
+                    if (string.Equals(key, "FadeInSeconds", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(key, "LockDelaySeconds", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (TryParseSeconds(valueText, out seconds))
+                        {
+                            settings.FadeInDurationMs = seconds * 1000;
+                        }
+
+                        continue;
+                    }
+
+                    if (string.Equals(key, "FadeOutSeconds", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (TryParseSeconds(valueText, out seconds))
+                        {
+                            settings.FadeOutDurationMs = seconds * 1000;
+                        }
+
+                        continue;
+                    }
+
+                    if (string.Equals(key, "LockWorkstation", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (TryParseBoolean(valueText, out boolValue))
+                        {
+                            settings.LockWorkstation = boolValue;
+                        }
+
+                        continue;
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                return ScreensaverSettings.CreateDefault();
+            }
+
+            return settings;
+        }
+
+        private static bool TryParseSeconds(string text, out int seconds)
+        {
+            if (!int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out seconds))
+            {
+                return false;
+            }
+
+            seconds = Math.Max(MinSettingSeconds, Math.Min(MaxSettingSeconds, seconds));
+            return true;
+        }
+
+        private static bool TryParseBoolean(string text, out bool value)
+        {
+            string normalized = text.Trim();
+
+            if (string.Equals(normalized, "true", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "yes", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "on", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "1", StringComparison.OrdinalIgnoreCase))
+            {
+                value = true;
+                return true;
+            }
+
+            if (string.Equals(normalized, "false", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "no", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "off", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(normalized, "0", StringComparison.OrdinalIgnoreCase))
+            {
+                value = false;
+                return true;
+            }
+
+            value = false;
+            return false;
         }
 
         private static void EnableDpiAwareness()
@@ -87,14 +204,36 @@ namespace DimScreensaver
             }
         }
 
+        private sealed class ScreensaverSettings
+        {
+            public int FadeInDurationMs { get; set; }
+
+            public int FadeOutDurationMs { get; set; }
+
+            public bool LockWorkstation { get; set; }
+
+            public static ScreensaverSettings CreateDefault()
+            {
+                return new ScreensaverSettings
+                {
+                    FadeInDurationMs = DefaultFadeInDurationMs,
+                    FadeOutDurationMs = DefaultFadeOutDurationMs,
+                    LockWorkstation = DefaultLockWorkstation,
+                };
+            }
+        }
+
         private sealed class ScreensaverContext : ApplicationContext
         {
             private readonly List<DimForm> forms = new List<DimForm>();
+            private readonly ScreensaverSettings settings;
             private int openForms;
             private bool cursorHidden;
+            private bool locking;
 
-            public ScreensaverContext()
+            public ScreensaverContext(ScreensaverSettings settings)
             {
+                this.settings = settings;
                 Screen[] screens = Screen.AllScreens;
                 openForms = screens.Length;
 
@@ -105,9 +244,10 @@ namespace DimScreensaver
                     // Each monitor gets its own transparent black overlay window.
                     // This handles negative coordinates used by monitors positioned
                     // left/above the primary display.
-                    DimForm form = new DimForm(screen.Bounds, FadeDurationMs, ExitFadeDurationMs, OpacityTimerIntervalMs, FinalDarkness);
+                    DimForm form = new DimForm(screen.Bounds, this.settings.FadeInDurationMs, this.settings.FadeOutDurationMs, OpacityTimerIntervalMs, FinalDarkness);
                     form.FormClosed += HandleFormClosed;
                     form.ExitRequested += CloseAll;
+                    form.LockRequested += LockWorkstationAndClose;
                     forms.Add(form);
                     form.Show();
                 }
@@ -121,6 +261,7 @@ namespace DimScreensaver
                     {
                         form.FormClosed -= HandleFormClosed;
                         form.ExitRequested -= CloseAll;
+                        form.LockRequested -= LockWorkstationAndClose;
                         form.Dispose();
                     }
                 }
@@ -174,6 +315,30 @@ namespace DimScreensaver
                     ExitThread();
                 }
             }
+
+            private void LockWorkstationAndClose(object sender, EventArgs e)
+            {
+                if (!settings.LockWorkstation)
+                {
+                    return;
+                }
+
+                if (locking)
+                {
+                    return;
+                }
+
+                locking = true;
+                LockWorkStation();
+
+                foreach (DimForm form in forms.ToArray())
+                {
+                    if (!form.IsDisposed)
+                    {
+                        form.Close();
+                    }
+                }
+            }
         }
 
         private sealed class DimForm : Form
@@ -190,8 +355,10 @@ namespace DimScreensaver
             private bool exiting;
             private long exitStartedAtMs;
             private double exitStartOpacity;
+            private bool lockRequested;
 
             public event EventHandler ExitRequested;
+            public event EventHandler LockRequested;
 
             public DimForm(Rectangle bounds, int fadeDurationMs, int exitFadeDurationMs, int opacityTimerIntervalMs, float finalDarkness)
             {
@@ -329,6 +496,7 @@ namespace DimScreensaver
                 if (progress >= 1f)
                 {
                     timer.Stop();
+                    RequestLock();
                 }
             }
 
@@ -371,6 +539,25 @@ namespace DimScreensaver
                 else
                 {
                     StartExitFade();
+                }
+            }
+
+            private void RequestLock()
+            {
+                if (exiting || lockRequested)
+                {
+                    return;
+                }
+
+                lockRequested = true;
+                EventHandler handler = LockRequested;
+                if (handler != null)
+                {
+                    handler(this, EventArgs.Empty);
+                }
+                else
+                {
+                    Close();
                 }
             }
 
@@ -532,6 +719,9 @@ namespace DimScreensaver
 
         [DllImport("user32.dll")]
         private static extern int ShowCursor(bool show);
+
+        [DllImport("user32.dll")]
+        private static extern bool LockWorkStation();
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool SetProcessDPIAware();

@@ -37,5 +37,6 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Copy-Item .\publish\DimScreensaver.exe .\publish\DimScreensaver.scr -Force
+Copy-Item .\DimScreensaver.ini .\publish\DimScreensaver.ini -Force
 
 Write-Host "Built .\publish\DimScreensaver.scr"
