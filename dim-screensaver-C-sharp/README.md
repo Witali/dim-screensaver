@@ -1,6 +1,7 @@
 # Dim Screensaver
 
-Windows screen saver that captures the current desktop, then smoothly darkens that frozen image over 10 seconds.
+Windows screen saver that opens transparent black overlay windows over all monitors, then smoothly fades them toward opacity over 10 seconds.
+Opacity is quantized into 16 transparency levels.
 
 ## Build
 
@@ -26,7 +27,7 @@ Run the saver directly:
 .\publish\DimScreensaver.scr /s
 ```
 
-Move the mouse, click, or press any key to close it.
+Move the mouse, click, or press any key to fade it out over 1 second and close it.
 
 ## Install
 
