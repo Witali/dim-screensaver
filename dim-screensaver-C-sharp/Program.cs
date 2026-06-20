@@ -48,8 +48,8 @@ namespace DimScreensaver
                     break;
                 case ScreenSaverCommandKind.Configure:
                     MessageBox.Show(
-                        "Dim Screensaver shows the current Windows desktop wallpaper, dims that image, then optionally locks Windows.\n\n" +
-                        "Edit the .ini file next to the .scr file to change FadeInSeconds, FadeOutSeconds, and LockWorkstation.\n\n" +
+                        "Dim Screensaver shows a configured image or the current Windows desktop wallpaper, dims that image, then optionally locks Windows.\n\n" +
+                        "Edit the .ini file next to the .scr file to change FadeInSeconds, FadeOutSeconds, LockWorkstation, and BackgroundImagePath.\n\n" +
                         "In Windows Screen Saver Settings, leave \"On resume, display logon screen\" turned off because this saver performs its own delayed lock.",
                         "Dim Screensaver",
                         MessageBoxButtons.OK,
@@ -180,6 +180,13 @@ namespace DimScreensaver
 
                         continue;
                     }
+
+                    if (string.Equals(key, "BackgroundImagePath", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(key, "ImagePath", StringComparison.OrdinalIgnoreCase))
+                    {
+                        settings.BackgroundImagePath = UnquotePath(valueText);
+                        continue;
+                    }
                 }
             }
             catch (Exception)
@@ -189,10 +196,11 @@ namespace DimScreensaver
             }
 
             Log(
-                "settings resolved fade_in_ms={0} fade_out_ms={1} lock_workstation={2}",
+                "settings resolved fade_in_ms={0} fade_out_ms={1} lock_workstation={2} background_image_path=\"{3}\"",
                 settings.FadeInDurationMs,
                 settings.FadeOutDurationMs,
-                settings.LockWorkstation);
+                settings.LockWorkstation,
+                settings.BackgroundImagePath ?? string.Empty);
             return settings;
         }
 
@@ -231,6 +239,19 @@ namespace DimScreensaver
 
             value = false;
             return false;
+        }
+
+        private static string UnquotePath(string text)
+        {
+            string trimmed = text == null ? string.Empty : text.Trim();
+            if (trimmed.Length >= 2 &&
+                ((trimmed[0] == '"' && trimmed[trimmed.Length - 1] == '"') ||
+                 (trimmed[0] == '\'' && trimmed[trimmed.Length - 1] == '\'')))
+            {
+                return trimmed.Substring(1, trimmed.Length - 2);
+            }
+
+            return trimmed;
         }
 
         private static void LogCurrentDesktopName()
@@ -292,6 +313,8 @@ namespace DimScreensaver
 
             public bool LockWorkstation { get; set; }
 
+            public string BackgroundImagePath { get; set; }
+
             public static ScreensaverSettings CreateDefault()
             {
                 return new ScreensaverSettings
@@ -299,6 +322,7 @@ namespace DimScreensaver
                     FadeInDurationMs = DefaultFadeInDurationMs,
                     FadeOutDurationMs = DefaultFadeOutDurationMs,
                     LockWorkstation = DefaultLockWorkstation,
+                    BackgroundImagePath = string.Empty,
                 };
             }
         }
@@ -317,7 +341,7 @@ namespace DimScreensaver
                 HideCursor();
                 Log("cursor hidden before background load");
                 LogCurrentDesktopName();
-                List<ScreenCapture> captures = CaptureScreens();
+                List<ScreenCapture> captures = CaptureScreens(this.settings.BackgroundImagePath);
                 openForms = captures.Count;
 
                 foreach (ScreenCapture capture in captures)
@@ -374,7 +398,7 @@ namespace DimScreensaver
                 cursorHidden = false;
             }
 
-            private static List<ScreenCapture> CaptureScreens()
+            private static List<ScreenCapture> CaptureScreens(string configuredBackgroundImagePath)
             {
                 List<ScreenCapture> captures = new List<ScreenCapture>();
                 Log("build wallpaper backgrounds begin count={0}", Screen.AllScreens.Length);
@@ -382,7 +406,7 @@ namespace DimScreensaver
                 foreach (Screen screen in Screen.AllScreens)
                 {
                     Rectangle bounds = screen.Bounds;
-                    Bitmap bitmap = CreateWallpaperBackground(bounds);
+                    Bitmap bitmap = CreateWallpaperBackground(bounds, configuredBackgroundImagePath);
                     bool copied = false;
 
                     if (bitmap == null)
@@ -433,17 +457,17 @@ namespace DimScreensaver
                 return captures;
             }
 
-            private static Bitmap CreateWallpaperBackground(Rectangle bounds)
+            private static Bitmap CreateWallpaperBackground(Rectangle bounds, string configuredBackgroundImagePath)
             {
-                string wallpaperPath = GetCurrentWallpaperPath();
-                if (string.IsNullOrEmpty(wallpaperPath))
+                string backgroundPath = GetBackgroundImagePath(configuredBackgroundImagePath);
+                if (string.IsNullOrEmpty(backgroundPath))
                 {
                     return null;
                 }
 
                 try
                 {
-                    using (Image wallpaper = Image.FromFile(wallpaperPath))
+                    using (Image wallpaper = Image.FromFile(backgroundPath))
                     {
                         Bitmap bitmap = new Bitmap(bounds.Width, bounds.Height);
                         using (Graphics graphics = Graphics.FromImage(bitmap))
@@ -461,7 +485,7 @@ namespace DimScreensaver
                             wallpaper.Height,
                             bounds.Width,
                             bounds.Height,
-                            wallpaperPath);
+                            backgroundPath);
                         return bitmap;
                     }
                 }
@@ -469,11 +493,36 @@ namespace DimScreensaver
                 {
                     Log(
                         "wallpaper background load failed path=\"{0}\" exception={1}: {2}",
-                        wallpaperPath,
+                        backgroundPath,
                         ex.GetType().Name,
                         ex.Message);
                     return null;
                 }
+            }
+
+            private static string GetBackgroundImagePath(string configuredBackgroundImagePath)
+            {
+                if (!string.IsNullOrWhiteSpace(configuredBackgroundImagePath))
+                {
+                    string resolvedPath = ResolveConfiguredImagePath(configuredBackgroundImagePath);
+                    if (File.Exists(resolvedPath))
+                    {
+                        Log("background image path from settings=\"{0}\"", resolvedPath);
+                        return resolvedPath;
+                    }
+
+                    Log("configured background image is not readable=\"{0}\"", configuredBackgroundImagePath);
+                }
+
+                return GetCurrentWallpaperPath();
+            }
+
+            private static string ResolveConfiguredImagePath(string configuredBackgroundImagePath)
+            {
+                string expandedPath = Environment.ExpandEnvironmentVariables(configuredBackgroundImagePath);
+                return Path.IsPathRooted(expandedPath)
+                    ? expandedPath
+                    : Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), expandedPath);
             }
 
             private static Rectangle GetCoverDestination(Size destinationSize, Size sourceSize)

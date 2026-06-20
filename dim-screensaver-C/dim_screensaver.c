@@ -42,6 +42,7 @@ typedef struct Settings {
     double fade_in_duration_ms;
     double fade_out_duration_ms;
     BOOL lock_workstation;
+    wchar_t background_image_path[MAX_PATH];
 } Settings;
 
 typedef struct AppState {
@@ -107,6 +108,7 @@ static char *TrimAscii(char *text);
 static BOOL EqualsIgnoreCaseAscii(const char *left, const char *right);
 static BOOL ParseSecondsAscii(char *text, long *seconds);
 static BOOL ParseBoolAscii(const char *text, BOOL *value);
+static BOOL ParsePathAscii(const char *text, wchar_t *path, DWORD path_count);
 static BOOL GetCurrentDesktopName(wchar_t *name, DWORD name_count);
 static void LogCurrentDesktopName(void);
 static void LogCapturedPixels(HDC capture_dc, int width, int height);
@@ -115,7 +117,10 @@ static void GetVirtualDesktopBounds(AppState *state);
 static BOOL CaptureDesktop(AppState *state);
 static BOOL CaptureDefaultDesktop(AppState *state);
 static DWORD WINAPI CaptureDefaultDesktopThreadProc(void *parameter);
-static BOOL LoadWallpaperBackground(AppState *state);
+static BOOL LoadBackgroundImage(AppState *state, const Settings *settings);
+static BOOL GetBackgroundImagePath(const Settings *settings, wchar_t *path, DWORD path_count);
+static BOOL ResolveConfiguredImagePath(const wchar_t *configured_path, wchar_t *path, DWORD path_count);
+static BOOL GetModuleDirectoryPath(wchar_t *path, DWORD path_count);
 static BOOL GetCurrentWallpaperPath(wchar_t *path, DWORD path_count);
 static BOOL GetTranscodedWallpaperPath(wchar_t *path, DWORD path_count);
 static BOOL LoadImageFileAsBitmap(const wchar_t *path, HBITMAP *bitmap, int *width, int *height);
@@ -287,8 +292,8 @@ static int RunSaver(HINSTANCE instance)
     HideCursor(&state);
     LogMessage(L"cursor hidden before background load");
 
-    LogMessage(L"loading wallpaper as primary dimming background");
-    captured = LoadWallpaperBackground(&state);
+    LogMessage(L"loading configured background image");
+    captured = LoadBackgroundImage(&state, &settings);
 
     if (!captured) {
         LogMessage(L"wallpaper background unavailable, attempting desktop capture fallback");
@@ -590,6 +595,7 @@ static Settings LoadSettings(void)
     settings.fade_in_duration_ms = DEFAULT_FADE_IN_DURATION_MS;
     settings.fade_out_duration_ms = DEFAULT_FADE_OUT_DURATION_MS;
     settings.lock_workstation = DEFAULT_LOCK_WORKSTATION;
+    settings.background_image_path[0] = L'\0';
 
     if (!GetSettingsPath(settings_path, MAX_PATH)) {
         LogMessage(L"settings path unavailable, using defaults");
@@ -681,13 +687,23 @@ static Settings LoadSettings(void)
             }
             continue;
         }
+
+        if (EqualsIgnoreCaseAscii(key, "BackgroundImagePath") ||
+            EqualsIgnoreCaseAscii(key, "ImagePath")) {
+            ParsePathAscii(
+                value_text,
+                settings.background_image_path,
+                (DWORD)(sizeof(settings.background_image_path) / sizeof(settings.background_image_path[0])));
+            continue;
+        }
     }
 
     LogMessage(
-        L"settings resolved fade_in_ms=%.0f fade_out_ms=%.0f lock_workstation=%d",
+        L"settings resolved fade_in_ms=%.0f fade_out_ms=%.0f lock_workstation=%d background_image_path=\"%ls\"",
         settings.fade_in_duration_ms,
         settings.fade_out_duration_ms,
-        settings.lock_workstation);
+        settings.lock_workstation,
+        settings.background_image_path);
 
     return settings;
 }
@@ -784,6 +800,64 @@ static BOOL ParseBoolAscii(const char *text, BOOL *value)
     }
 
     return FALSE;
+}
+
+static BOOL ParsePathAscii(const char *text, wchar_t *path, DWORD path_count)
+{
+    const char *start;
+    const char *end;
+    char buffer[SETTINGS_MAX_BYTES + 1];
+    size_t length;
+    int converted;
+
+    if (path == NULL || path_count == 0) {
+        return FALSE;
+    }
+
+    path[0] = L'\0';
+    if (text == NULL) {
+        return TRUE;
+    }
+
+    start = text;
+    while (*start == ' ' || *start == '\t') {
+        start++;
+    }
+
+    end = start + strlen(start);
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t')) {
+        end--;
+    }
+
+    if (end - start >= 2 &&
+        ((*start == '"' && end[-1] == '"') || (*start == '\'' && end[-1] == '\''))) {
+        start++;
+        end--;
+    }
+
+    length = (size_t)(end - start);
+    if (length == 0) {
+        return TRUE;
+    }
+
+    if (length >= sizeof(buffer)) {
+        return FALSE;
+    }
+
+    memcpy(buffer, start, length);
+    buffer[length] = '\0';
+
+    converted = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, buffer, -1, path, (int)path_count);
+    if (converted == 0) {
+        converted = MultiByteToWideChar(CP_ACP, 0, buffer, -1, path, (int)path_count);
+    }
+
+    if (converted == 0) {
+        path[0] = L'\0';
+        return FALSE;
+    }
+
+    return TRUE;
 }
 
 static BOOL GetCurrentDesktopName(wchar_t *name, DWORD name_count)
@@ -1130,27 +1204,113 @@ static DWORD WINAPI CaptureDefaultDesktopThreadProc(void *parameter)
     return 0;
 }
 
-static BOOL LoadWallpaperBackground(AppState *state)
+static BOOL LoadBackgroundImage(AppState *state, const Settings *settings)
 {
-    wchar_t wallpaper_path[MAX_PATH];
-    HBITMAP wallpaper_bitmap = NULL;
-    int wallpaper_width = 0;
-    int wallpaper_height = 0;
+    wchar_t image_path[MAX_PATH];
+    HBITMAP image_bitmap = NULL;
+    int image_width = 0;
+    int image_height = 0;
     BOOL loaded;
 
-    if (!GetCurrentWallpaperPath(wallpaper_path, (DWORD)(sizeof(wallpaper_path) / sizeof(wallpaper_path[0])))) {
+    if (!GetBackgroundImagePath(settings, image_path, (DWORD)(sizeof(image_path) / sizeof(image_path[0])))) {
         return FALSE;
     }
 
-    loaded = LoadImageFileAsBitmap(wallpaper_path, &wallpaper_bitmap, &wallpaper_width, &wallpaper_height);
+    loaded = LoadImageFileAsBitmap(image_path, &image_bitmap, &image_width, &image_height);
     if (!loaded) {
         return FALSE;
     }
 
-    loaded = CreateWallpaperCanvas(state, wallpaper_bitmap, wallpaper_width, wallpaper_height);
-    DeleteObject(wallpaper_bitmap);
+    loaded = CreateWallpaperCanvas(state, image_bitmap, image_width, image_height);
+    DeleteObject(image_bitmap);
 
     return loaded;
+}
+
+static BOOL GetBackgroundImagePath(const Settings *settings, wchar_t *path, DWORD path_count)
+{
+    if (settings != NULL && settings->background_image_path[0] != L'\0') {
+        if (ResolveConfiguredImagePath(settings->background_image_path, path, path_count)) {
+            LogMessage(L"background image path from settings=\"%ls\"", path);
+            return TRUE;
+        }
+
+        LogMessage(L"configured background image is not readable=\"%ls\"", settings->background_image_path);
+    }
+
+    return GetCurrentWallpaperPath(path, path_count);
+}
+
+static BOOL ResolveConfiguredImagePath(const wchar_t *configured_path, wchar_t *path, DWORD path_count)
+{
+    DWORD attributes;
+    wchar_t expanded_path[MAX_PATH];
+    DWORD expanded_length;
+    const wchar_t *candidate_path;
+    wchar_t directory[MAX_PATH];
+    int written;
+    BOOL absolute;
+
+    if (configured_path == NULL || configured_path[0] == L'\0' || path == NULL || path_count == 0) {
+        return FALSE;
+    }
+
+    expanded_length = ExpandEnvironmentStringsW(
+        configured_path,
+        expanded_path,
+        (DWORD)(sizeof(expanded_path) / sizeof(expanded_path[0])));
+    if (expanded_length > 0 && expanded_length <= (DWORD)(sizeof(expanded_path) / sizeof(expanded_path[0]))) {
+        candidate_path = expanded_path;
+    } else {
+        candidate_path = configured_path;
+    }
+
+    absolute =
+        candidate_path[0] == L'\\' ||
+        (iswalpha(candidate_path[0]) && candidate_path[1] == L':' && (candidate_path[2] == L'\\' || candidate_path[2] == L'/'));
+
+    if (absolute) {
+        if (wcslen(candidate_path) >= path_count) {
+            return FALSE;
+        }
+
+        wcscpy_s(path, path_count, candidate_path);
+    } else {
+        if (!GetModuleDirectoryPath(directory, (DWORD)(sizeof(directory) / sizeof(directory[0])))) {
+            return FALSE;
+        }
+
+        written = swprintf_s(path, path_count, L"%ls\\%ls", directory, candidate_path);
+        if (written <= 0 || (DWORD)written >= path_count) {
+            return FALSE;
+        }
+    }
+
+    attributes = GetFileAttributesW(path);
+    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+static BOOL GetModuleDirectoryPath(wchar_t *path, DWORD path_count)
+{
+    DWORD length;
+    wchar_t *last_separator;
+
+    if (path == NULL || path_count == 0) {
+        return FALSE;
+    }
+
+    length = GetModuleFileNameW(NULL, path, path_count);
+    if (length == 0 || length >= path_count) {
+        return FALSE;
+    }
+
+    last_separator = wcsrchr(path, L'\\');
+    if (last_separator == NULL || last_separator == path) {
+        return FALSE;
+    }
+
+    *last_separator = L'\0';
+    return TRUE;
 }
 
 static BOOL GetCurrentWallpaperPath(wchar_t *path, DWORD path_count)
@@ -1854,7 +2014,7 @@ static void ShowConfigurationDialog(HWND owner)
 {
     MessageBoxW(
         owner,
-        L"Dim Screensaver shows the current Windows desktop wallpaper, dims that image, then optionally locks Windows.\n\nEdit the .ini file next to the .scr file to change FadeInSeconds, FadeOutSeconds, and LockWorkstation.\n\nIn Windows Screen Saver Settings, leave \"On resume, display logon screen\" turned off because this saver performs its own delayed lock.",
+        L"Dim Screensaver shows a configured image or the current Windows desktop wallpaper, dims that image, then optionally locks Windows.\n\nEdit the .ini file next to the .scr file to change FadeInSeconds, FadeOutSeconds, LockWorkstation, and BackgroundImagePath.\n\nIn Windows Screen Saver Settings, leave \"On resume, display logon screen\" turned off because this saver performs its own delayed lock.",
         L"Dim Screensaver C",
         MB_OK | MB_ICONINFORMATION);
 }

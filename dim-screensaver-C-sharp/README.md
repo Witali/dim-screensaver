@@ -1,6 +1,6 @@
 # Dim Screensaver
 
-Windows screen saver that loads the current Windows desktop wallpaper, opens borderless topmost windows over each monitor, then draws the wallpaper image with an increasingly dark black layer.
+Windows screen saver that loads a configured image, or the current Windows desktop wallpaper by default, opens borderless topmost windows over each monitor, then draws that image with an increasingly dark black layer.
 The dimmed frame is redrawn at about 15 frames per second.
 
 ## Build
@@ -28,9 +28,10 @@ Keep `DimScreensaver.ini` next to `DimScreensaver.scr`:
 FadeInSeconds=10
 FadeOutSeconds=1
 LockWorkstation=true
+BackgroundImagePath=
 ```
 
-Use `FadeInSeconds=10`, `20`, or `60` for 10 seconds, 20 seconds, or 1 minute before optional locking. `FadeOutSeconds` controls the fade-out after input. Set `LockWorkstation=false` to keep the screen dimmed without locking Windows. If the file is missing or a value cannot be read, the defaults are 10 seconds fade-in, 1 second fade-out, and `LockWorkstation=true`.
+Use `FadeInSeconds=10`, `20`, or `60` for 10 seconds, 20 seconds, or 1 minute before optional locking. `FadeOutSeconds` controls the fade-out after input. Set `LockWorkstation=false` to keep the screen dimmed without locking Windows. Set `BackgroundImagePath` to an absolute image path, or to a relative path next to `DimScreensaver.scr`; leave it empty to use the current Windows wallpaper. If the file is missing or a value cannot be read, the defaults are 10 seconds fade-in, 1 second fade-out, `LockWorkstation=true`, and no custom image.
 
 The older `LockDelaySeconds` key is still accepted as an alias for `FadeInSeconds`.
 
