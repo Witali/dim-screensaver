@@ -36,8 +36,8 @@ namespace DimScreensaver
                     break;
                 case ScreenSaverCommandKind.Configure:
                     MessageBox.Show(
-                        "Dim Screensaver плавно затемняет экран прозрачным чёрным окном за 10 секунд.\n\n" +
-                        "Чтобы установить его, соберите проект и скопируйте DimScreensaver.scr в папку Windows.",
+                        "Dim Screensaver fades a transparent black fullscreen overlay in over 10 seconds.\n\n" +
+                        "To install it, build the project and copy DimScreensaver.scr to a stable folder.",
                         "Dim Screensaver",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Information);

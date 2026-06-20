@@ -42,3 +42,11 @@ dim-screensaver-C-sharp\publish\DimScreensaver.scr
 
 Move the mouse, click, or press any key to fade it out over 1 second and close it.
 The mouse cursor is hidden before the fade starts and restored on exit.
+
+## Windows Setup
+
+Configure Dim Screensaver as a normal Windows screen saver, and set its wait time earlier than the display power-off timeout. For example, start the screen saver after 4 minutes, then configure Windows power settings to turn the display off later.
+
+That way the saver gently dims the desktop first, and Windows turns the physical display off only after the later power-management timeout.
+
+![Windows Screen Saver Settings](assets/screen-saver-settings.png)
